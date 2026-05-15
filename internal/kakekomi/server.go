@@ -32,6 +32,16 @@ func Run(args []string) error {
 	}
 	defer store.Close()
 
+	// Startup GC + periodic sweep.
+	if n, err := store.GC(); err != nil {
+		log.Printf("startup gc: %v", err)
+	} else if n > 0 {
+		log.Printf("startup gc: removed %d expired case(s)", n)
+	}
+	gcCtx, gcCancel := context.WithCancel(context.Background())
+	defer gcCancel()
+	go runGCLoop(gcCtx, store, 1*time.Hour)
+
 	app := &App{
 		Config:    cfg,
 		Store:     store,

@@ -104,11 +104,6 @@ func (a *App) processSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := NewID()
-	if err != nil {
-		http.Error(w, "id error", http.StatusInternalServerError)
-		return
-	}
 	code, err := GenerateCode()
 	if err != nil {
 		http.Error(w, "code error", http.StatusInternalServerError)
@@ -125,7 +120,7 @@ func (a *App) processSubmit(w http.ResponseWriter, r *http.Request) {
 	if ttl <= 0 {
 		ttl = 90 * 24 * time.Hour
 	}
-	if err := a.Store.CreateCase(id, hash, salt, ttl, blob); err != nil {
+	if _, err := a.Store.CreateCase(hash, salt, ttl, blob); err != nil {
 		http.Error(w, "store error", http.StatusInternalServerError)
 		return
 	}
@@ -143,12 +138,16 @@ func (a *App) handleReply(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "code required", http.StatusBadRequest)
 			return
 		}
-		// Constant minimum wait to blunt timing oracles (Phase 1 placeholder).
+		// Fixed total wait. /reply always blocks for `totalWait` regardless of
+		// match outcome. If the underlying scan exceeds `totalWait`, no sleep is
+		// added and the residual time leaks the case count (not the code). This
+		// is Phase 1 acceptable; Phase 5+ should split into indexed lookup +
+		// argon2 verify so scan time is O(1).
+		const totalWait = 1500 * time.Millisecond
 		start := time.Now()
 		_, err := a.Store.FindCaseByCode(code)
-		const minWait = 500 * time.Millisecond
-		if elapsed := time.Since(start); elapsed < minWait {
-			time.Sleep(minWait - elapsed)
+		if remaining := totalWait - time.Since(start); remaining > 0 {
+			time.Sleep(remaining)
 		}
 		if err != nil {
 			a.render(w, "reply", "コードが一致しません。")

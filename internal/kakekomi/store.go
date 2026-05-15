@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS cases (
     expires_at INTEGER NOT NULL,
     read_flag  INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_cases_expires_at ON cases(expires_at);
 `
 
 func OpenStore(dataDir string) (*Store, error) {
@@ -58,25 +59,45 @@ func (s *Store) blobPath(id string) string {
 	return filepath.Join(s.dataDir, "blob", id+".age")
 }
 
-// CreateCase writes blob and inserts metadata. On metadata failure the blob is removed.
-func (s *Store) CreateCase(id string, codeHash, codeSalt []byte, ttl time.Duration, blob []byte) error {
-	if strings.ContainsAny(id, `/\.`) || id == "" {
-		return errors.New("invalid case id")
+// isUniqueErr detects SQLite UNIQUE / PRIMARY KEY constraint violations.
+// modernc.org/sqlite surfaces these via the error string.
+func isUniqueErr(err error) bool {
+	if err == nil {
+		return false
 	}
+	s := err.Error()
+	return strings.Contains(s, "UNIQUE") || strings.Contains(s, "PRIMARY KEY")
+}
+
+// CreateCase generates a unique case_id, inserts the metadata row, then writes
+// the encrypted blob. Returns the case ID used. The INSERT is performed first
+// so uniqueness is atomic; on UNIQUE collision a new ID is tried (up to 5x).
+func (s *Store) CreateCase(codeHash, codeSalt []byte, ttl time.Duration, blob []byte) (string, error) {
+	const maxRetries = 5
 	now := time.Now()
-	path := s.blobPath(id)
-	if err := os.WriteFile(path, blob, 0600); err != nil {
-		return fmt.Errorf("write blob: %w", err)
+	expires := now.Add(ttl).Unix()
+
+	for i := 0; i < maxRetries; i++ {
+		id, err := NewID()
+		if err != nil {
+			return "", err
+		}
+		_, err = s.db.Exec(
+			`INSERT INTO cases (id, code_hash, code_salt, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+			id, codeHash, codeSalt, now.Unix(), expires,
+		)
+		if err == nil {
+			if werr := os.WriteFile(s.blobPath(id), blob, 0600); werr != nil {
+				_, _ = s.db.Exec(`DELETE FROM cases WHERE id = ?`, id)
+				return "", fmt.Errorf("write blob: %w", werr)
+			}
+			return id, nil
+		}
+		if !isUniqueErr(err) {
+			return "", fmt.Errorf("insert case: %w", err)
+		}
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO cases (id, code_hash, code_salt, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
-		id, codeHash, codeSalt, now.Unix(), now.Add(ttl).Unix(),
-	)
-	if err != nil {
-		_ = os.Remove(path)
-		return fmt.Errorf("insert case: %w", err)
-	}
-	return nil
+	return "", errors.New("case_id collision retries exhausted")
 }
 
 func (s *Store) ListCases() ([]Case, error) {
@@ -116,8 +137,13 @@ func (s *Store) MarkRead(id string) error {
 	return err
 }
 
-// FindCaseByCode walks all cases verifying argon2id(code, salt) against the stored hash.
-// O(n) is acceptable for Phase 1; revisit when n is large.
+// FindCaseByCode walks every case, verifying argon2id(code, salt) against the
+// stored hash. The loop intentionally does NOT short-circuit on match: total
+// time depends only on case count, not on which row matched.
+//
+// Phase 1 residual leak: total time scales with N (number of cases). When N
+// grows large, /reply timing observable to a remote attacker can leak the
+// approximate case count. Phase 5+ should split into indexed lookup + verify.
 func (s *Store) FindCaseByCode(code string) (string, error) {
 	rows, err := s.db.Query(`SELECT id, code_salt, code_hash FROM cases`)
 	if err != nil {
@@ -125,15 +151,54 @@ func (s *Store) FindCaseByCode(code string) (string, error) {
 	}
 	defer rows.Close()
 
+	var foundID string
+	var found int
 	for rows.Next() {
 		var id string
 		var salt, hash []byte
 		if err := rows.Scan(&id, &salt, &hash); err != nil {
 			return "", err
 		}
-		if VerifyCode(code, salt, hash) {
-			return id, nil
+		if VerifyCode(code, salt, hash) && found == 0 {
+			foundID = id
+			found = 1
 		}
 	}
-	return "", errors.New("code not found")
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if found == 0 {
+		return "", errors.New("code not found")
+	}
+	return foundID, nil
+}
+
+// GC deletes expired cases (DB row + blob file) and returns the removed count.
+func (s *Store) GC() (int, error) {
+	rows, err := s.db.Query(`SELECT id FROM cases WHERE expires_at < ?`, time.Now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	var expired []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		expired = append(expired, id)
+	}
+	rows.Close()
+
+	n := 0
+	for _, id := range expired {
+		if err := os.Remove(s.blobPath(id)); err != nil && !os.IsNotExist(err) {
+			return n, err
+		}
+		if _, err := s.db.Exec(`DELETE FROM cases WHERE id = ?`, id); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }

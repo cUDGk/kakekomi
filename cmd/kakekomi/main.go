@@ -23,6 +23,8 @@ func main() {
 		err = kakekomi.Init(args)
 	case "run":
 		err = kakekomi.Run(args)
+	case "gc":
+		err = kakekomi.Gc(args)
 	case "version", "-v", "--version":
 		fmt.Println("kakekomi", version)
 	case "help", "-h", "--help":
@@ -47,6 +49,9 @@ Usage:
 
   kakekomi run [--data-dir DIR] [--addr HOST:PORT]
         Start HTTP server (Phase 1: localhost only, no Tor).
+
+  kakekomi gc [--data-dir DIR]
+        Remove expired cases (TTL sweep).
 
   kakekomi version
   kakekomi help`)
