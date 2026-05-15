@@ -1,0 +1,8 @@
+﻿.\kakekomi.exe : Receiver passphrase (12+ chars): Confirm passphrase: init: EOF
+At line:5 char:6
++ "@ | .\kakekomi.exe init --data-dir .\testdata 2>&1 | Out-File -FileP ...
++      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Receiver passph...rase: init: EOF:String) [], RemoteExc 
+   eption
+    + FullyQualifiedErrorId : NativeCommandError
+ 

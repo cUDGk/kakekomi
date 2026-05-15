@@ -7,5 +7,14 @@
 <p><button type="submit">確認</button></p>
 </form>
 
-{{with .Data}}<div class="warn">{{.}}</div>{{end}}
+{{with .Data}}
+  {{if eq .Status "no-match"}}
+    <div class="warn">コードが一致しません。</div>
+  {{else if eq .Status "verified"}}
+    <div class="warn">コードを確認しました。受信者からの返信はまだありません。</div>
+  {{else if eq .Status "has-reply"}}
+    <h2>受信者からの返信:</h2>
+    <div class="code-box">{{.ReplyText}}</div>
+  {{end}}
+{{end}}
 {{end}}

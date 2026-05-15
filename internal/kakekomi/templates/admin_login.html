@@ -1,0 +1,15 @@
+{{define "content"}}
+<h1>受信者ログイン</h1>
+
+<form action="/admin/login" method="post">
+<label>パスワード</label>
+<input type="password" name="password" autocomplete="current-password" required>
+
+<label>TOTP コード</label>
+<input type="text" name="totp" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" required>
+
+<p><button type="submit">ログイン</button></p>
+</form>
+
+{{with .Data}}<div class="warn">{{.}}</div>{{end}}
+{{end}}

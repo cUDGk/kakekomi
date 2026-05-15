@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build + test + vet + vulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l -s .)
+          if [ -n "$out" ]; then echo "$out"; exit 1; fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: build server
+        run: go build -trimpath -ldflags="-s -w -buildid=" -o kakekomi ./cmd/kakekomi
+
+      - name: build viewer (airgap)
+        run: go build -trimpath -tags airgap -ldflags="-s -w -buildid=" -o kakekomi-viewer ./cmd/viewer
+
+      - name: test
+        run: go test -race ./...

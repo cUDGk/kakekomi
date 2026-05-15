@@ -1,0 +1,25 @@
+{{define "content"}}
+<h1>通報 {{.Data.ID}}</h1>
+
+<p class="muted">
+受信時刻 (時間単位): {{.Data.Created.Format "2006-01-02 15:04"}}<br>
+失効予定: {{.Data.Expires.Format "2006-01-02"}}<br>
+サイズ帯: {{.Data.Bucket}}
+</p>
+
+<div class="warn">
+★ <strong>このサーバ上で開かないでください。</strong><br>
+DL した blob を手元の air-gap 端末 (Qubes DispVM / Tails) に運び、そこで <code>kakekomi-viewer decrypt</code> を実行してください。
+</div>
+
+<p>
+<form class="inline" action="/admin/download/{{.Data.ID}}" method="get">
+  <button type="submit">暗号化 blob を DL</button>
+</form>
+&nbsp;
+<a href="/admin/reply/{{.Data.ID}}">返信を書く</a>
+{{if .Data.HasReply}}<span class="muted"> (返信済)</span>{{end}}
+</p>
+
+<p><a href="/admin/inbox">← 受信箱</a></p>
+{{end}}

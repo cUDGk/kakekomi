@@ -19,12 +19,13 @@ type Store struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS cases (
-    id         TEXT PRIMARY KEY,
-    code_hash  BLOB NOT NULL,
-    code_salt  BLOB NOT NULL,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL,
-    read_flag  INTEGER NOT NULL DEFAULT 0
+    id            TEXT PRIMARY KEY,
+    code_hash     BLOB NOT NULL,
+    code_salt     BLOB NOT NULL,
+    created_at    INTEGER NOT NULL,        -- rounded to hour (SPEC F-73)
+    expires_at    INTEGER NOT NULL,
+    read_flag     INTEGER NOT NULL DEFAULT 0,
+    has_reply     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_cases_expires_at ON cases(expires_at);
 `
@@ -33,7 +34,7 @@ func OpenStore(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dataDir, "blob"), 0700); err != nil {
 		return nil, err
 	}
-	dsn := filepath.Join(dataDir, "kakekomi.db")
+	dsn := filepath.Join(dataDir, "kakekomi.db") + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -52,15 +53,20 @@ type Case struct {
 	CreatedAt time.Time
 	ExpiresAt time.Time
 	Read      bool
+	HasReply  bool
 	Size      int64
 }
 
+func (s *Store) caseDir(id string) string {
+	return filepath.Join(s.dataDir, "blob", id)
+}
 func (s *Store) blobPath(id string) string {
-	return filepath.Join(s.dataDir, "blob", id+".age")
+	return filepath.Join(s.caseDir(id), "case-data.tar.age")
+}
+func (s *Store) replyPath(id string) string {
+	return filepath.Join(s.caseDir(id), "reply.bin")
 }
 
-// isUniqueErr detects SQLite UNIQUE / PRIMARY KEY constraint violations.
-// modernc.org/sqlite surfaces these via the error string.
 func isUniqueErr(err error) bool {
 	if err == nil {
 		return false
@@ -69,12 +75,13 @@ func isUniqueErr(err error) bool {
 	return strings.Contains(s, "UNIQUE") || strings.Contains(s, "PRIMARY KEY")
 }
 
-// CreateCase generates a unique case_id, inserts the metadata row, then writes
-// the encrypted blob. Returns the case ID used. The INSERT is performed first
-// so uniqueness is atomic; on UNIQUE collision a new ID is tried (up to 5x).
+// CreateCase inserts case metadata with a fresh ID (with collision retry),
+// then writes the encrypted submission blob to <data>/blob/<id>/case-data.tar.age.
+// Returns the case ID used.
 func (s *Store) CreateCase(codeHash, codeSalt []byte, ttl time.Duration, blob []byte) (string, error) {
 	const maxRetries = 5
-	now := time.Now()
+	// SPEC F-73: timestamp rounded to hour.
+	now := time.Now().UTC().Truncate(time.Hour)
 	expires := now.Add(ttl).Unix()
 
 	for i := 0; i < maxRetries; i++ {
@@ -87,7 +94,12 @@ func (s *Store) CreateCase(codeHash, codeSalt []byte, ttl time.Duration, blob []
 			id, codeHash, codeSalt, now.Unix(), expires,
 		)
 		if err == nil {
+			if mkerr := os.MkdirAll(s.caseDir(id), 0700); mkerr != nil {
+				_, _ = s.db.Exec(`DELETE FROM cases WHERE id = ?`, id)
+				return "", fmt.Errorf("mkdir case: %w", mkerr)
+			}
 			if werr := os.WriteFile(s.blobPath(id), blob, 0600); werr != nil {
+				_ = os.RemoveAll(s.caseDir(id))
 				_, _ = s.db.Exec(`DELETE FROM cases WHERE id = ?`, id)
 				return "", fmt.Errorf("write blob: %w", werr)
 			}
@@ -102,7 +114,7 @@ func (s *Store) CreateCase(codeHash, codeSalt []byte, ttl time.Duration, blob []
 
 func (s *Store) ListCases() ([]Case, error) {
 	rows, err := s.db.Query(
-		`SELECT id, created_at, expires_at, read_flag FROM cases ORDER BY created_at DESC`,
+		`SELECT id, created_at, expires_at, read_flag, has_reply FROM cases ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -113,19 +125,40 @@ func (s *Store) ListCases() ([]Case, error) {
 	for rows.Next() {
 		var c Case
 		var created, expires int64
-		var read int
-		if err := rows.Scan(&c.ID, &created, &expires, &read); err != nil {
+		var read, hasReply int
+		if err := rows.Scan(&c.ID, &created, &expires, &read, &hasReply); err != nil {
 			return nil, err
 		}
 		c.CreatedAt = time.Unix(created, 0)
 		c.ExpiresAt = time.Unix(expires, 0)
 		c.Read = read == 1
+		c.HasReply = hasReply == 1
 		if fi, err := os.Stat(s.blobPath(c.ID)); err == nil {
 			c.Size = fi.Size()
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetCase(id string) (*Case, error) {
+	row := s.db.QueryRow(
+		`SELECT id, created_at, expires_at, read_flag, has_reply FROM cases WHERE id = ?`, id,
+	)
+	var c Case
+	var created, expires int64
+	var read, hasReply int
+	if err := row.Scan(&c.ID, &created, &expires, &read, &hasReply); err != nil {
+		return nil, err
+	}
+	c.CreatedAt = time.Unix(created, 0)
+	c.ExpiresAt = time.Unix(expires, 0)
+	c.Read = read == 1
+	c.HasReply = hasReply == 1
+	if fi, err := os.Stat(s.blobPath(c.ID)); err == nil {
+		c.Size = fi.Size()
+	}
+	return &c, nil
 }
 
 func (s *Store) ReadBlob(id string) ([]byte, error) {
@@ -137,13 +170,23 @@ func (s *Store) MarkRead(id string) error {
 	return err
 }
 
-// FindCaseByCode walks every case, verifying argon2id(code, salt) against the
-// stored hash. The loop intentionally does NOT short-circuit on match: total
-// time depends only on case count, not on which row matched.
-//
-// Phase 1 residual leak: total time scales with N (number of cases). When N
-// grows large, /reply timing observable to a remote attacker can leak the
-// approximate case count. Phase 5+ should split into indexed lookup + verify.
+// WriteReply persists an encrypted reply blob and flips has_reply=1.
+func (s *Store) WriteReply(id string, blob []byte) error {
+	if _, err := s.GetCase(id); err != nil {
+		return err
+	}
+	if err := os.WriteFile(s.replyPath(id), blob, 0600); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE cases SET has_reply = 1 WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) ReadReply(id string) ([]byte, error) {
+	return os.ReadFile(s.replyPath(id))
+}
+
+// FindCaseByCode walks every case, full-scan, late-return. See HARDENING §L0.5.
 func (s *Store) FindCaseByCode(code string) (string, error) {
 	rows, err := s.db.Query(`SELECT id, code_salt, code_hash FROM cases`)
 	if err != nil {
@@ -159,7 +202,8 @@ func (s *Store) FindCaseByCode(code string) (string, error) {
 		if err := rows.Scan(&id, &salt, &hash); err != nil {
 			return "", err
 		}
-		if VerifyCode(code, salt, hash) && found == 0 {
+		match := VerifyCode(code, salt, hash)
+		if match && found == 0 {
 			foundID = id
 			found = 1
 		}
@@ -173,7 +217,7 @@ func (s *Store) FindCaseByCode(code string) (string, error) {
 	return foundID, nil
 }
 
-// GC deletes expired cases (DB row + blob file) and returns the removed count.
+// GC deletes expired cases (DB row + blob dir).
 func (s *Store) GC() (int, error) {
 	rows, err := s.db.Query(`SELECT id FROM cases WHERE expires_at < ?`, time.Now().Unix())
 	if err != nil {
@@ -192,7 +236,7 @@ func (s *Store) GC() (int, error) {
 
 	n := 0
 	for _, id := range expired {
-		if err := os.Remove(s.blobPath(id)); err != nil && !os.IsNotExist(err) {
+		if err := shredDir(s.caseDir(id)); err != nil && !os.IsNotExist(err) {
 			return n, err
 		}
 		if _, err := s.db.Exec(`DELETE FROM cases WHERE id = ?`, id); err != nil {
@@ -200,5 +244,50 @@ func (s *Store) GC() (int, error) {
 		}
 		n++
 	}
+	// Compact SQLite to remove tombstones (HARDENING §L2.2).
+	_, _ = s.db.Exec(`VACUUM`)
 	return n, nil
+}
+
+// shredDir best-effort overwrites each file with zeros before unlinking,
+// then removes the directory. On SSD this is not a true secure erase but it
+// removes cold cache / page cache traces in volatile layers.
+func shredDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		p := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			if err := shredDir(p); err != nil {
+				return err
+			}
+			continue
+		}
+		fi, err := os.Stat(p)
+		if err != nil {
+			return err
+		}
+		zeros := make([]byte, fi.Size())
+		_ = os.WriteFile(p, zeros, 0600)
+		_ = os.Remove(p)
+	}
+	return os.Remove(dir)
+}
+
+// Wipe is the duress-mode emergency wipe: drops ALL cases (DB + blobs).
+func (s *Store) Wipe() error {
+	dir := filepath.Join(s.dataDir, "blob")
+	entries, err := os.ReadDir(dir)
+	if err == nil {
+		for _, e := range entries {
+			_ = shredDir(filepath.Join(dir, e.Name()))
+		}
+	}
+	if _, err := s.db.Exec(`DELETE FROM cases`); err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`VACUUM`)
+	return nil
 }

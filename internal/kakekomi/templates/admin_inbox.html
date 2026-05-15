@@ -2,17 +2,19 @@
 <h1>受信箱</h1>
 <p class="muted">
 サーバは平文を持たないため、本文は一覧表示できません。<br>
-通報を DL したあと、手元の端末で <code>age -d -i SECRET.txt &lt; FILE.age</code> で復号してください。
+通報をクリックして詳細ページに進み、暗号化 blob を DL → 手元の air-gap 端末で <code>kakekomi-viewer decrypt</code> で開いてください。
 </p>
 
 <ul class="cases">
-{{range .Data}}
+{{range .Data.Cases}}
   <li>
-    <a href="/admin/case/{{.ID}}">{{.ID}}.age</a>
-    <span class="muted"> — {{.CreatedAt.Format "2006-01-02 15:04"}}{{if .Read}} ・既読{{end}} ・{{.Size}} B</span>
+    <a href="/admin/case/{{.ID}}">{{.ID}}</a>
+    <span class="muted"> — {{.CreatedAt.Format "2006-01-02 15:04"}} ・{{.Bucket}}{{if .Read}} ・既読{{end}}{{if .HasReply}} ・返信済{{end}}</span>
   </li>
 {{else}}
   <li class="muted">通報はまだありません。</li>
 {{end}}
 </ul>
+
+<p><form class="inline" action="/admin/logout" method="post"><input type="hidden" name="_csrf" value="{{.CSRF}}"><button type="submit">ログアウト</button></form></p>
 {{end}}

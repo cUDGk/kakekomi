@@ -1,0 +1,24 @@
+{{define "content"}}
+<h1>返信: {{.Data.ID}}</h1>
+
+<div class="warn">
+返信は通報者のコードから派生する対称鍵 (HKDF) で暗号化されます。<br>
+受信した暗号化 blob を手元で復号した時に取り出した <strong>通報コード</strong> をそのまま入力してください。
+</div>
+
+<form action="/admin/reply/{{.Data.ID}}" method="post">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+
+<label class="required">通報コード (受信した blob 内の "code" フィールド)</label>
+<input type="text" name="case_code" autocomplete="off" required>
+
+<label class="required">返信本文</label>
+<textarea name="reply_body" required></textarea>
+
+<p><button type="submit">返信を保存</button></p>
+</form>
+
+{{with .Data.Status}}<div class="warn">{{.}}</div>{{end}}
+
+<p><a href="/admin/case/{{.Data.ID}}">← 通報詳細</a></p>
+{{end}}

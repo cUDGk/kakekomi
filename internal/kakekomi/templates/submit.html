@@ -6,11 +6,21 @@
 ⚠ 安全のためのお願い:<br>
 ・文章の言い回しから個人を特定される可能性があります。普段書かない文体で書く、別ツールでリライトしてから貼り付ける事を検討してください。<br>
 ・時刻や曜日を本文に書くとタイムゾーンが推定されます。<br>
-・(Phase 1: 添付未対応。本文と任意項目のみ送信可能)
+・写真は EXIF を除去しても、カメラ固有の PRNU パターンで撮影機種を識別できる事があります。第三者の撮影写真や十分に古い写真の使用を推奨します。
 </div>
 
-<form action="/submit" method="post">
-{{range .Data}}
+<form action="/submit" method="post" enctype="multipart/form-data">
+<input type="hidden" name="_pow" value="{{.PoWToken}}">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+{{if .Honeypot}}
+  <div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">
+    <label>Do not fill this</label>
+    <input type="text" name="hp_name" tabindex="-1" autocomplete="off">
+  </div>
+{{end}}
+
+{{with .Data}}
+{{range .Fields}}
   <label{{if .Required}} class="required"{{end}}>{{.Label}}</label>
   {{if eq .Type "textarea"}}
     <textarea name="{{.ID}}"{{if .MaxLength}} maxlength="{{.MaxLength}}"{{end}}{{if .Required}} required{{end}}{{with .Placeholder}} placeholder="{{.}}"{{end}}></textarea>
@@ -29,6 +39,15 @@
     <input type="text" name="{{.ID}}"{{if .MaxLength}} maxlength="{{.MaxLength}}"{{end}}{{if .Required}} required{{end}}{{with .Placeholder}} placeholder="{{.}}"{{end}}>
   {{end}}
 {{end}}
+
+{{if .Attachments.Enabled}}
+  <label>添付ファイル (任意)</label>
+  <p class="muted">画像と plain text のみ。最大 {{.Attachments.MaxFiles}} ファイル、各 {{.Attachments.MaxSizeMBPerFile}} MB、合計 {{.Attachments.MaxTotalSizeMB}} MB まで。<br>
+  画像は EXIF/XMP/ICC を除去し sRGB に再エンコードしてから保存されます。</p>
+  <input type="file" name="attachments" multiple>
+{{end}}
+{{end}}
+
 <p><button type="submit">送信</button></p>
 </form>
 {{end}}

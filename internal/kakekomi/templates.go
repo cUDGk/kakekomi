@@ -11,7 +11,11 @@ var tmplFS embed.FS
 // loadTemplates parses layout.html + each page template into its own *Template.
 // One *Template per page avoids "content" block name collisions.
 func loadTemplates() map[string]*template.Template {
-	pages := []string{"index", "submit", "done", "reply", "admin_inbox"}
+	pages := []string{
+		"index",
+		"submit", "done", "reply",
+		"admin_login", "admin_inbox", "admin_case", "admin_reply",
+	}
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.ParseFS(tmplFS,

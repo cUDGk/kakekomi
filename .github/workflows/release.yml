@@ -1,0 +1,145 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write     # gh release
+  id-token: write     # SLSA + cosign keyless signing
+  attestations: write # build provenance attestations
+
+jobs:
+  build:
+    name: reproducible build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64, ext: '.exe' }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: build server
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+        run: |
+          out="kakekomi-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}${{ matrix.target.ext }}"
+          go build \
+            -trimpath \
+            -buildvcs=true \
+            -ldflags="-s -w -buildid= -X main.version=${GITHUB_REF_NAME}" \
+            -tags 'netgo osusergo' \
+            -o "$out" \
+            ./cmd/kakekomi
+          sha256sum "$out" > "$out.sha256"
+
+      - name: build viewer (airgap)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+        run: |
+          out="kakekomi-viewer-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}${{ matrix.target.ext }}"
+          go build \
+            -trimpath \
+            -buildvcs=true \
+            -ldflags="-s -w -buildid= -X main.version=${GITHUB_REF_NAME}" \
+            -tags 'airgap netgo osusergo' \
+            -o "$out" \
+            ./cmd/viewer
+          sha256sum "$out" > "$out.sha256"
+
+      - name: SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          output-file: kakekomi-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}.sbom.cdx.json
+          path: .
+
+      - name: SLSA provenance (build attestation)
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            kakekomi-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}
+            kakekomi-viewer-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}
+
+      - name: cosign install
+        uses: sigstore/cosign-installer@v3
+
+      - name: cosign sign-blob (keyless, OIDC)
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          for f in kakekomi-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }} \
+                   kakekomi-viewer-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}; do
+            cosign sign-blob \
+              --output-signature "$f.sig" \
+              --output-certificate "$f.pem" \
+              "$f"
+          done
+
+      - name: upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kakekomi-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
+          path: |
+            kakekomi-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}
+            kakekomi-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}.sha256
+            kakekomi-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}.sig
+            kakekomi-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}.pem
+            kakekomi-viewer-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}
+            kakekomi-viewer-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}.sha256
+            kakekomi-viewer-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}.sig
+            kakekomi-viewer-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}.pem
+            kakekomi-${{ github.ref_name }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}.sbom.cdx.json
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: aggregate checksums
+        run: |
+          ( cd artifacts && find . -name '*.sha256' -exec cat {} \; ) > SHA256SUMS
+      - name: create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "kakekomi $GITHUB_REF_NAME" \
+            --notes "kakekomi $GITHUB_REF_NAME — EXPERIMENTAL until third-party audit.
+
+          Verify a binary:
+
+            cosign verify-blob \\
+              --certificate-identity-regexp='^https://github.com/${{ github.repository }}/' \\
+              --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \\
+              --signature kakekomi-$GITHUB_REF_NAME-linux-amd64.sig \\
+              --certificate kakekomi-$GITHUB_REF_NAME-linux-amd64.pem \\
+              kakekomi-$GITHUB_REF_NAME-linux-amd64
+
+          See SHA256SUMS for hashes and *.sbom.cdx.json for SBOM." \
+            artifacts/* SHA256SUMS
