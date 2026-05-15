@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>{{.SiteTitle}}</h1>
+{{with .SiteIntro}}<p>{{.}}</p>{{end}}
+
+<form class="inline" action="/submit" method="get">
+  <button type="submit">通報を始める</button>
+</form>
+
+<p class="muted">すでにコードをお持ちの方は <a href="/reply">こちら</a></p>
+{{end}}

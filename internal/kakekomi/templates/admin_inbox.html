@@ -1,0 +1,18 @@
+{{define "content"}}
+<h1>受信箱</h1>
+<p class="muted">
+サーバは平文を持たないため、本文は一覧表示できません。<br>
+通報を DL したあと、手元の端末で <code>age -d -i SECRET.txt &lt; FILE.age</code> で復号してください。
+</p>
+
+<ul class="cases">
+{{range .Data}}
+  <li>
+    <a href="/admin/case/{{.ID}}">{{.ID}}.age</a>
+    <span class="muted"> — {{.CreatedAt.Format "2006-01-02 15:04"}}{{if .Read}} ・既読{{end}} ・{{.Size}} B</span>
+  </li>
+{{else}}
+  <li class="muted">通報はまだありません。</li>
+{{end}}
+</ul>
+{{end}}

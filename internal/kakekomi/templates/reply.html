@@ -1,0 +1,11 @@
+{{define "content"}}
+<h1>再訪</h1>
+
+<form action="/reply" method="post">
+<label>あなたのコード</label>
+<input type="text" name="code" autocomplete="off" required>
+<p><button type="submit">確認</button></p>
+</form>
+
+{{with .Data}}<div class="warn">{{.}}</div>{{end}}
+{{end}}

@@ -1,0 +1,9 @@
+/data/
+*.db
+*.age
+*.exe
+/kakekomi
+/kakekomi-viewer
+.DS_Store
+.vscode/
+.idea/
