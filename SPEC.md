@@ -91,6 +91,31 @@
 | F-44 | `kakekomi gc` |
 | F-45 | `kakekomi version` |
 
+### 3.6.5 ガチガチ追加 MUST (ハードニング統合)
+
+詳細は `HARDENING.md` 参照。SPEC レベルでの MUST だけ抜粋:
+
+| ID | 要件 |
+|---|---|
+| F-60 | すべての HKDF 派生に **domain-separated label** (`kakekomi/v1/<purpose>`) を使う |
+| F-61 | 鍵素材を保持するメモリは `mlock` + `memguard` で保護 |
+| F-62 | core dump を OS/プロセス両層で禁止 (`prctl(PR_SET_DUMPABLE,0)` + `LimitCORE=0`) |
+| F-63 | すべての暗号化 blob に **versioned ヘッダ** (`"KKK1" + version`) を付与 (将来のアルゴリズム移行可能性) |
+| F-64 | age 鍵は **90 日で強制ローテ**、`config validate` で超過を **エラー** にする |
+| F-65 | `kakekomi viewer` を **air-gap モード** (build tag `airgap` で net 除外) で別バイナリとしてビルド |
+| F-66 | **Duress TOTP**: 第二の TOTP コードでログインすると `<data_dir>/blob/` を shred + secrets 消去 + SQLite VACUUM 0 埋め |
+| F-67 | HTTP keep-alive を **無効** (全レスに `Connection: close`)、HTTP/2 / HTTP/3 を明示無効 |
+| F-68 | リリース成果物に **SLSA L3 provenance attestation** と **cosign 署名** を同梱 |
+| F-69 | 依存を **vendored** し、`govulncheck` を CI で必須化 |
+| F-70 | 通報フォーム上部に固定で **スタイロメトリ / TZ / PRNU 警告** を表示 |
+| F-71 | サーバ運用は **LUKS / BitLocker フルディスク暗号化** を前提とし、init wizard で未暗号化を検出した場合に警告 + 確認入力を要求 |
+| F-72 | `security.profile: paranoid` のみ v1 でサポート (弱める設定は v1 で提供しない) |
+| F-73 | timestamp は **1 時間単位に丸めて** SQLite に保存・表示 |
+| F-74 | 画像添付は EXIF 除去だけでなく **再エンコード** (sRGB 統一 + quality 90) を実施 |
+| F-75 | `Content-Type` 検出は MIME マジックバイト + 独自 sniffer の二重チェック、拡張子は信用しない |
+| F-76 | フォーム多重送信防御に **double-submit CSRF token** (`HMAC(session||form||rand)`) を使う |
+| F-77 | 受信者 admin session: in-memory only / 15 分 idle 失効 / `HttpOnly; Secure; SameSite=Strict; Path=/admin` |
+
 ### 3.7 やらない事 (MUST NOT)
 
 | ID | 禁止事項 |
@@ -105,6 +130,11 @@
 | F-X8 | 受信者の age 秘密鍵をサーバに保存しない |
 | F-X9 | **PDF / Office / SVG / 動画 / 音声を受信しない** (v1) — メタ除去の漏れ穴を排除 |
 | F-X10 | `Server` / `X-Powered-By` 等のフィンガープリント可能なヘッダを返さない |
+| F-X11 | `math/rand` を import しない (`crypto/rand` のみ。lint で禁止) |
+| F-X12 | アクセスログを出さない (エラーログにユーザ入力を含めない) |
+| F-X13 | `Accept-Language` ヘッダを無視 (フィンガープリント低減)、UI 言語は URL クエリ `?lang=` のみ |
+| F-X14 | `kakekomi` プロセスは Tor 以外の外部に出ない (`http.DefaultTransport` を nil 化 + systemd `IPAddressDeny=any`) |
+| F-X15 | v1 では PDF / Office / SVG / 動画 / 音声 / アーカイブ (zip/rar/7z) を一切受信しない |
 
 ### 3.8 セキュリティヘッダ (MUST)
 

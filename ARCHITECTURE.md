@@ -1,6 +1,6 @@
 # kakekomi アーキテクチャ
 
-> **改訂版 (2026-05-15)**: 設計レビューで識別した穴を安全側に全倒し。
+> **改訂版 (2026-05-15)** + **ハードニング統合 (2026-05-16)**: 設計レビューで識別した穴を安全側に全倒し、その上で多層防御を統合。実装時のガチガチ運用詳細は `HARDENING.md` を参照 (defense-in-depth の各層、systemd / Docker / torrc の具体)。
 > 主要な変更:
 > - 通報者鍵を廃止 → **code-derived symmetric key (HKDF(code))** で双方向通信
 > - PDF/Office を受信拒否 (v1)、画像と plain text のみ
@@ -49,6 +49,8 @@
 ```
 
 ## 2. 鍵設計 — 二層方式
+
+> 鍵運用とメモリ保護の詳細 (mlock / memguard / domain-separated HKDF / 90 日ローテ / アルゴリズム versioning) は HARDENING.md §L0 を参照。
 
 ### 2.1 受信者の age 鍵 (envelope encryption)
 
@@ -290,6 +292,17 @@ v1 default を external にした理由: tor の security update 追従の責務
 - vanguards-lite (Tor 0.4.7+ で built-in、要 enable)
 - 受信者 .onion は `HiddenServiceAuthorizeClient` で Client Authorization 必須化
 
+### 7.1 暗号化 blob のフォーマット (versioned)
+
+すべての暗号化 blob は以下の固定ヘッダで始まる:
+
+```
+| magic "KKK1" (4B) | version (2B, BE) | reserved (2B, 0x0000) | payload (age) |
+```
+
+- `version=1`: age (X25519 + ChaCha20-Poly1305) + HKDF-SHA256
+- 復号時に version を見て分岐 → 旧 version も永久に読める (post-quantum など将来移行時に新 version を追加するだけ)
+
 ## 8. ストレージレイアウト
 
 ```
@@ -319,7 +332,19 @@ kakekomi config validate              # config.yaml の検証
 kakekomi rotate-key                   # 鍵ローテーション (旧 blob は旧鍵で読める)
 kakekomi gc                           # TTL 切れ通報の削除 (cron 用)
 kakekomi version                      # バージョン情報 (SBOM ハッシュ含む)
+kakekomi backup --out PATH            # 暗号化バックアップ (受信者鍵 + 第二鍵で多重暗号化)
+kakekomi backup-key --shamir 3of5     # 受信者秘密鍵を Shamir's Secret Sharing で分散
 ```
+
+### 9.1 別バイナリ: kakekomi-viewer (air-gap モード)
+
+```
+kakekomi-viewer decrypt --identity ~/.age/key.txt --in case-data.tar.age --out ./out/
+```
+
+- build tag `airgap` 付きで `net` import を除外してビルド
+- ネットワーク機能ゼロ、stdin/stdout/ファイル I/O のみ
+- Qubes DispVM / Tails / 物理 air-gap PC で動作する事を想定
 
 ## 10. 技術選定まとめ
 

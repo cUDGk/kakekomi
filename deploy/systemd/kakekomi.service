@@ -1,0 +1,112 @@
+; kakekomi 用ハードン済み systemd unit
+;
+; 配置: /etc/systemd/system/kakekomi.service
+; デプロイ後: sudo systemctl daemon-reload && sudo systemctl enable --now kakekomi
+;
+; 注意: パスフレーズを stdin で受け取る設計のため、
+;       Type=simple + StandardInput=tty-force を採用している。
+;       systemd で自動起動するにはパスフレーズを安全に注入する仕組みが別途必要。
+;       v1 では運用者が `systemctl start kakekomi` 後に `systemctl stdin attach` 等で
+;       対話的に与えるか、systemd-creds (encrypted credentials) で渡す事を推奨。
+
+[Unit]
+Description=kakekomi anonymous tipline (hardened)
+Documentation=https://github.com/<TBD>/kakekomi/blob/main/HARDENING.md
+After=network-online.target tor.service
+Requires=tor.service
+ConditionPathExists=/var/lib/kakekomi/config/kakekomi.yaml
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kakekomi run --data-dir=/var/lib/kakekomi
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+
+; パスフレーズ注入は systemd-creds 推奨 (例):
+;   sudo systemd-creds encrypt - /etc/credstore.encrypted/kakekomi.passphrase
+;   LoadCredentialEncrypted=passphrase:/etc/credstore.encrypted/kakekomi.passphrase
+; kakekomi 側は %d/passphrase を読む
+
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kakekomi
+
+;; ───────── プロセス分離 ─────────
+DynamicUser=yes
+StateDirectory=kakekomi
+StateDirectoryMode=0700
+RuntimeDirectory=kakekomi
+RuntimeDirectoryMode=0700
+LogsDirectory=kakekomi
+LogsDirectoryMode=0700
+
+;; ───────── ファイルシステム ─────────
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateMounts=yes
+ReadWritePaths=/var/lib/kakekomi /run/kakekomi
+ReadOnlyPaths=/etc
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+;; ───────── 特権 ─────────
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SecureBits=keep-caps-locked noroot-locked no-setuid-fixup-locked
+
+;; ───────── syscall ─────────
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @debug @cpu-emulation @mount @raw-io @reboot @swap @obsolete @clock @module @memlock-check
+SystemCallErrorNumber=EPERM
+; ※ mlock を使うので memlock 系は除外しない。@memlock-check は除外で OK
+
+;; ───────── メモリ実行制限 ─────────
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+
+;; ───────── ネットワーク ─────────
+; kakekomi 自身は外に出ない。tor との通信は Unix socket 経由 (/run/kakekomi/ingress.sock, admin.sock)
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX
+PrivateNetwork=no
+; ※ tor との Unix socket 通信のため AF_UNIX を許可
+
+;; ───────── core dump 禁止 ─────────
+LimitCORE=0
+SystemCallFilter=~@core-dumps
+
+;; ───────── リソース上限 ─────────
+LimitNOFILE=2048
+LimitNPROC=128
+TasksMax=128
+MemoryMax=512M
+MemorySwapMax=0
+CPUWeight=80
+IOWeight=80
+
+;; ───────── ジャーナルログ ─────────
+; kakekomi はアクセスログを出さない設計だが、エラーログは journal に流れる。
+; ホスト側で systemd-journald の設定で SystemMaxUse= を絞る事を推奨。
+
+;; ───────── OOM ─────────
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

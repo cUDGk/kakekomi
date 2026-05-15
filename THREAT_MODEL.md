@@ -48,10 +48,32 @@ kakekomi は SecureDrop の代替ではない。個人ジャーナリスト/弁�
 - 想定主体: DDoS、ストレージ枯渇、デマ大量送信、攻撃ペイロード送信
 - 能力: 通報フォームへの連打、巨大ファイル投擲
 - 防御:
-  - PoW (hashcash 型) で 1 通報あたり数秒の計算コスト
-  - 1 通報あたりサイズ上限
+  - サーバ側 PoW (hash chain + token bucket) で抑制
+  - Tor 0.4.8+ の onion service 層 PoW (HiddenServicePoWDefensesEnabled) で二重防御
+  - 1 通報あたりサイズ上限 + 全体ディスク quota
   - TTL による自動削除
   - 添付ファイルはサーバ側で開かない (受信者がローカルで復号する設計)
+  - HTTP keep-alive 無効 / Goroutine 上限 / slowloris タイムアウト
+  - 添付 MIME 制限 (画像 + plain text のみ) で攻撃ペイロード経路を遮断
+
+### A5: サプライチェーン攻撃
+- 想定主体: バイナリ配布段階の改竄 (GitHub Releases 改竄、proxy MITM)、依存ライブラリ汚染
+- 能力: 任意コードを kakekomi バイナリに混入
+- 防御:
+  - 再現可能ビルド (trimpath / no buildid / vendored deps)
+  - SLSA Level 3 provenance attestation
+  - cosign / sigstore による署名付きリリース
+  - GPG 署名タグ
+  - 起動時にバイナリ自己ハッシュを表示 → README とつき合わせる運用
+  - `govulncheck` を CI で必須化、`dependabot` で patch 自動 PR
+
+### A6: 受信者の duress 状態 (脅迫下での開示強要)
+- 想定主体: 受信者を物理的/法的に強制し、ダッシュボードにログインさせる
+- 能力: 受信者の協力 (パスフレーズ・TOTP・age 秘密鍵) を引き出せる
+- 防御:
+  - **Duress TOTP**: 第二の TOTP コードでログインすると blob/secrets を即座に shred 削除
+  - Warrant Canary: 第三者から見て「強制が発生した可能性」を観測可能にする
+  - これらは「強制を防ぐ」のではなく「強制された事を最小限の被害で済ませる」ための仕組み
 
 ## 3. スコープ外 (out of scope)
 

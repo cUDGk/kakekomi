@@ -1,0 +1,82 @@
+# kakekomi + tor の hardened compose
+#
+# 前提: ホスト側に LUKS / dm-crypt 等でフルディスク暗号化が有効である事
+# 起動: docker compose up -d
+#
+# パスフレーズの渡し方:
+#   - docker secrets (swarm) を使うか
+#   - 対話起動 (docker compose run -i kakekomi run) で stdin から渡す
+#   - 自動起動の場合は systemd-creds 相当を別途用意
+#
+# 注意: このファイルは「ハードニング例」。本番ではホスト側のカーネル/AppArmor/SELinux
+#       設定も合わせて確認する事。
+
+version: "3.9"
+
+services:
+  tor:
+    image: dperson/torproxy:latest    # または自前 build の hardened tor image
+    container_name: kakekomi-tor
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]      # tor が低位ポートを bind する場合のみ
+    security_opt:
+      - no-new-privileges:true
+    user: "100:101"                  # debian-tor 相当
+    volumes:
+      - ./tor/torrc.example:/etc/tor/torrc:ro
+      - tor-data:/var/lib/tor
+      - kakekomi-sock:/run/kakekomi:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/tor/kakekomi-ingress/hostname"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+
+  kakekomi:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: kakekomi:latest
+    container_name: kakekomi-app
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./seccomp.json       # 後述
+    pids_limit: 128
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpu_shares: 256
+    user: "65532:65532"              # nonroot
+    environment:
+      - TZ=UTC                       # ホスト TZ を漏らさない
+    volumes:
+      - kakekomi-data:/data
+      - kakekomi-sock:/run/kakekomi
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks:
+      - internal
+    depends_on:
+      tor:
+        condition: service_healthy
+
+networks:
+  internal:
+    driver: bridge
+    internal: true                   # 外部に出ない
+
+volumes:
+  tor-data:
+    driver: local
+  kakekomi-data:
+    driver: local
+  kakekomi-sock:
+    driver: local

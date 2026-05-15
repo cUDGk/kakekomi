@@ -1,0 +1,97 @@
+# kakekomi 用ハードン済み tor 設定例
+#
+# 配置: /etc/tor/torrc.d/kakekomi.conf  (Debian/Ubuntu) または /etc/tor/torrc に追記
+# 適用: sudo systemctl restart tor
+#
+# 前提:
+#   - tor 0.4.8+ (HiddenServicePoWDefensesEnabled 対応のため)
+#   - kakekomi が /run/kakekomi/ingress.sock と /run/kakekomi/admin.sock で listen している事
+
+# ───────── 基本 ─────────
+DataDirectory   /var/lib/tor
+RunAsDaemon     1
+User            debian-tor
+
+# ───────── ログ ─────────
+Log notice file /var/log/tor/notices.log
+# onion アドレス・回路情報をログに書かない
+SafeLogging 1
+# 古いログを残さない (rotate は OS の logrotate で)
+ProtocolWarnings 0
+
+# ───────── server-only モード ─────────
+# kakekomi のホストは onion service を「提供する」だけ。
+# クライアントとして tor を使わないので SOCKS / Trans / DNS は無効化。
+SocksPort 0
+TransPort 0
+DNSPort 0
+ClientUseIPv4 0
+ClientUseIPv6 0
+ClientOnly 0
+
+# ───────── control port ─────────
+# kakekomi が Onion Service を動的に作る場合は control port が必要。
+# 静的 .onion (HiddenServiceDir で定義) なら control port は不要 ─ kakekomi が
+# Unix socket を listen するだけ。v1 はこちらを推奨。
+#
+# control port を使う場合 (動的 onion):
+#   ControlPort unix:/run/tor/control.sock
+#   CookieAuthentication 1
+#   CookieAuthFile /run/tor/control.authcookie
+#   CookieAuthFileGroupReadable 1
+
+# ───────── vanguards-lite (Tor 0.4.7+ で built-in) ─────────
+# Hidden Service の guard discovery 攻撃を軽減
+GuardLifetime 60 days
+HSLayer2Guards 4
+HSLayer3Guards 8
+NumDirectoryGuards 3
+
+# ───────── onion service の DoS 防御 ─────────
+# Tor 0.4.7+: introduction point の DoS を抑制
+HiddenServiceEnableIntroDoSDefense 1
+HiddenServiceEnableIntroDoSRatePerSec 25
+HiddenServiceEnableIntroDoSBurstPerSec 200
+
+# Tor 0.4.8+: onion service レイヤの PoW (application 側 PoW と二重防御)
+# HiddenServicePoWDefensesEnabled 1   # 該当 onion service のセクション内で有効化する
+
+# ───────── 公開 .onion: 通報受信フォーム ─────────
+HiddenServiceDir /var/lib/tor/kakekomi-ingress/
+HiddenServicePort 80 unix:/run/kakekomi/ingress.sock
+HiddenServiceVersion 3
+HiddenServiceMaxStreams 32
+HiddenServiceMaxStreamsCloseCircuit 1
+HiddenServicePoWDefensesEnabled 1
+HiddenServicePoWQueueRate 250
+HiddenServicePoWQueueBurst 2500
+
+# ───────── 受信者専用 .onion: 管理ダッシュボード ─────────
+HiddenServiceDir /var/lib/tor/kakekomi-admin/
+HiddenServicePort 80 unix:/run/kakekomi/admin.sock
+HiddenServiceVersion 3
+HiddenServiceMaxStreams 8
+HiddenServiceMaxStreamsCloseCircuit 1
+HiddenServicePoWDefensesEnabled 1
+
+# ※ Client Authorization を必須化
+# /var/lib/tor/kakekomi-admin/authorized_clients/ に受信者の auth 公開鍵を配置:
+#   <client_name>.auth: descriptor:x25519:<受信者公開鍵 base32>
+# 受信者の Tor Browser には対応する秘密鍵を入れる:
+#   ~/.config/tor/onion-auth/<onion>.auth_private
+
+# ───────── アドレス露出最小化 ─────────
+# bridge は使わない (これは server-only)
+UseBridges 0
+# fallback dirs はデフォルト
+
+# ───────── ネットワーク負荷制御 ─────────
+RelayBandwidthRate 0
+RelayBandwidthBurst 0
+# kakekomi ホストは middle relay として動作しない (server-only モード)
+ORPort 0
+DirPort 0
+
+# ───────── 起動完了通知 ─────────
+# systemd 統合: tor.service の Type=notify と組み合わせる
+# (Debian/Ubuntu パッケージのデフォルトで有効)
