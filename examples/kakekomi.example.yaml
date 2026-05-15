@@ -15,7 +15,9 @@ receiver:
   display_name: "○○新聞 調査報道班"
 
 tor:
-  mode: embedded                # embedded | external
+  mode: external                # external (推奨) | embedded
+  control_port: 9051            # external 時のみ
+  cookie_auth_file: /var/run/tor/control.authcookie
   ingress_onion_dir: ./tor/ingress
   admin_onion_dir: ./tor/admin
   admin_client_auth: true
@@ -84,7 +86,7 @@ fields:
     label: "受信者からの返信を希望する"
     type: checkbox
     required: false
-    description: "希望する場合、完了画面で表示される鍵ファイルを保管してください"
+    description: "希望する場合、完了画面で表示される 7 語のコードを保管してください (鍵ファイルは不要)"
 
 # ─────────────────────────────────────────────────────────
 # 添付ファイル
@@ -92,17 +94,28 @@ fields:
 attachments:
   enabled: true
   max_files: 10
-  max_size_mb_per_file: 200
-  max_total_size_mb: 500
-  strip_metadata: true          # EXIF/XMP/ICC/PDF/Office メタを除去
+  max_size_mb_per_file: 50
+  max_total_size_mb: 200
+  # v1 では画像と plain text のみ許可 (PDF/Office のメタ除去は完全実装が困難なため受信拒否)
+  allowed_mime:
+    - image/jpeg
+    - image/png
+    - image/webp
+    - image/gif
+    - image/heic
+    - text/plain
+  strip_metadata: true          # 画像メタ (EXIF/XMP/ICC) を除去
 
 # ─────────────────────────────────────────────────────────
 # セキュリティ
 # ─────────────────────────────────────────────────────────
 security:
-  pow_difficulty: 18            # bits, ~ 数秒の計算コスト
-  rate_limit_per_ip: false      # Tor 経由なので IP 単位は無意味、PoW で代替
+  pow:
+    enabled: true
+    mode: server_side           # サーバ側 PoW のみ。ブラウザ JS なしで動く
+    target_cost_ms: 2000        # サーバ側ハッシュチェーンの目標コスト
   honeypot_field: true          # ボット検出用の非表示フィールド
+  pubkey_lock: ./config/pubkey.lock  # receiver.public_key の sha256 を pin (改竄検出)
 
 # ─────────────────────────────────────────────────────────
 # 保管期間
