@@ -1,0 +1,119 @@
+# kakekomi 設定ファイルのサンプル
+#
+# 受信者(ジャーナリスト/弁護士) がこのファイルを編集する。
+# フォーム項目は自由に追加・削除・並び替え可能。
+# `required: true` を明示した項目だけが必須。それ以外は空送信できる。
+
+site:
+  title: "通報窓口"
+  intro: |
+    安全に情報をお寄せください。
+    身元の入力は不要です。記入したくない項目は空欄のままで構いません。
+
+receiver:
+  public_key: "age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # init で自動投入
+  display_name: "○○新聞 調査報道班"
+
+tor:
+  mode: embedded                # embedded | external
+  ingress_onion_dir: ./tor/ingress
+  admin_onion_dir: ./tor/admin
+  admin_client_auth: true
+
+# ─────────────────────────────────────────────────────────
+# フォーム項目定義  ★ ここを自由に編集する
+# 利用可能 type: text | textarea | select | date | checkbox | number
+# ─────────────────────────────────────────────────────────
+fields:
+
+  # 唯一のデフォルト必須項目。これだけ書けば送信できる。
+  - id: body
+    label: "通報内容"
+    type: textarea
+    required: true
+    max_length: 50000
+    placeholder: "ご存じの事をできる範囲でお書きください。"
+
+  # 以下はすべて optional のサンプル。
+  # 不要な項目はコメントアウトか削除してOK。
+  # 順序もここでの並び順がそのままフォーム上の順序になる。
+
+  - id: subject
+    label: "件名 (任意)"
+    type: text
+    required: false
+    max_length: 200
+
+  - id: when
+    label: "事案の時期 (任意)"
+    type: text
+    required: false
+    placeholder: "例: 2025年秋頃 / 2024年4月 など"
+
+  - id: where
+    label: "発生場所 (任意)"
+    type: text
+    required: false
+    placeholder: "例: 都内某所、○○県○○市など"
+
+  - id: org
+    label: "対象組織 (任意)"
+    type: text
+    required: false
+    placeholder: "会社名・団体名・部署名など"
+
+  - id: category
+    label: "種別 (任意)"
+    type: select
+    required: false
+    options:
+      - "ハラスメント"
+      - "会計不正"
+      - "労務問題"
+      - "個人情報の不適切扱い"
+      - "公文書改ざん"
+      - "その他"
+
+  - id: evidence_exists
+    label: "証拠資料をお持ちですか?"
+    type: checkbox
+    required: false
+    description: "下の添付欄からファイルを送れます (任意)"
+
+  - id: contact_pref
+    label: "受信者からの返信を希望する"
+    type: checkbox
+    required: false
+    description: "希望する場合、完了画面で表示される鍵ファイルを保管してください"
+
+# ─────────────────────────────────────────────────────────
+# 添付ファイル
+# ─────────────────────────────────────────────────────────
+attachments:
+  enabled: true
+  max_files: 10
+  max_size_mb_per_file: 200
+  max_total_size_mb: 500
+  strip_metadata: true          # EXIF/XMP/ICC/PDF/Office メタを除去
+
+# ─────────────────────────────────────────────────────────
+# セキュリティ
+# ─────────────────────────────────────────────────────────
+security:
+  pow_difficulty: 18            # bits, ~ 数秒の計算コスト
+  rate_limit_per_ip: false      # Tor 経由なので IP 単位は無意味、PoW で代替
+  honeypot_field: true          # ボット検出用の非表示フィールド
+
+# ─────────────────────────────────────────────────────────
+# 保管期間
+# ─────────────────────────────────────────────────────────
+retention:
+  default_ttl_days: 90          # 受信者が読まずに放置したら自動削除
+  on_read_delete: false         # true にすると既読即削除モード
+
+# ─────────────────────────────────────────────────────────
+# UI
+# ─────────────────────────────────────────────────────────
+ui:
+  theme: minimal                # v1 は minimal のみ
+  show_powered_by: false        # OSS 表記を出すかどうか
