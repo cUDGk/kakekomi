@@ -26,8 +26,9 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 'stable'
           cache: true
+          check-latest: true
 
       - name: govulncheck
         run: |

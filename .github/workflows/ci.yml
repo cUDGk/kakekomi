@@ -17,8 +17,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # stable = 最新パッチ。go.mod の `go 1.25.0` を読むと
+          # 1.25.0 ちょうどが入って stdlib CVE が残るため.
+          go-version: 'stable'
           cache: true
+          check-latest: true
 
       - name: gofmt
         run: |
