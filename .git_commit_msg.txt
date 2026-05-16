@@ -1,45 +1,49 @@
-fix(post-p8): バグ 1-4 を塞ぐ + 検証
+fix(audit): independent second-opinion review で見つかった脆弱性 9 件を修正
 
-1. HEIC を default/safe MIME から除外
-   - 旧: image/heic を allow_mime に入れていたが StripImageMetadata に case なし → メタ素通り
-   - 新: safeMIMEs と DefaultConfig.AllowedMIME 両方から削除、コメントで理由明記
-   - iPhone ユーザは JPEG/PNG に変換してから投稿する運用
+依存更新:
+- filippo.io/age v1.2.0 → v1.3.1 (GO-2024-3344)
+- golang.org/x/crypto v0.41.0 → v0.51.0 (GO-2025-4116/4134/4135)
+- govulncheck: 0 vulnerabilities
 
-2. CSP から 'unsafe-inline' 削除
-   - CSS を layout.html の inline から templates/style.css に分離
-   - /static/style.css ハンドラを追加 (embed.FS から配信、独自に Content-Type: text/css)
-   - CSP: style-src 'self' (unsafe-inline なし)
-   - 検証: CSP ヘッダから unsafe-inline 消失 + /static/style.css = 200/2016 bytes
+CRITICAL:
+- C1: /reply に CSRF が無かった → anon CSRF cookie (Path=/reply) を追加、POST で検証
+- C2: AddOnionExistingKey が privKey/targetHostPort を素直に文字列連結していたため、
+  ingress.key 改竄経由で Tor control 任意コマンド注入が可能だった
+  → ED25519-V3: prefix 強制、\r/\n/\0 と空白文字を reject
+- C3: viewer の tar 展開で symlink/hardlink を黙ってスキップ + Windows ドライブ文字や
+  UNC パスを十分にチェックしていなかった
+  → safeTarName() でドライブ文字/UNC/絶対パス/.. セグメント/制御バイトを reject
+  → tar.TypeSymlink/TypeLink を明示的に拒否、未知 Typeflag も拒否
+  → filepath.Abs(dir) + HasPrefix check で再確認
 
-3. /reply timing leak 解消 (O(N) → O(1))
-   - cases.code_lookup BLOB 列 + INDEX を追加
-   - code_lookup = HMAC-SHA256(secrets.LookupKey, code), domain label = "kakekomi/v1/case-code-lookup"
-   - secrets.age に LookupKey (32B random) を追加
-   - FindCaseByCode: SELECT WHERE code_lookup = ? LIMIT 1 → 0 or 1 row
-   - 1 row の場合のみ argon2id 検証、0 row でも dummy argon2id で時間を均す
-   - 検証 (6 cases / 5x bulk submit 後):
-       wrong: 1508/1507/1503 ms
-       right: 1507 ms (差 5 ms 以内、件数非依存)
+HIGH:
+- H1: ParseMultipartForm が >32 MiB の添付を /tmp に書き出していたが
+  RemoveAll が呼ばれていなかった → 平文添付が disk に残留 (SPEC F-X6 違反)
+  → defer r.MultipartForm.RemoveAll() を追加
+- H2: /reply の has-reply / no-reply 分岐が wall-time に観測可能
+  → deadline を 1500ms → 2500ms に延ばし、no-match と no-reply の両パスで dummy HKDF + DecryptSymmetric を実行
+- H3: /admin/login に CSRF なし → 同じく anon CSRF cookie (Path=/admin/login) で防御
+- H4: Tor password の改行注入を防ぐため AUTHENTICATE 送信前に hasControlBytes() で reject
+- H5: Duress TOTP が admin password の正解を要求していなかった
+  → 攻撃者が duress TOTP を ~1/10^6 で当てて全 wipe させられた
+  → 「正しい admin password + duress TOTP」の AND 条件に修正
+  (password 不正だと duress 判定はスキップ → 通常の認証失敗として扱う)
 
-4. 匿名 CSRF を PoW token から独立
-   - 旧: CSRF = HMAC(csrf_key, "anon-csrf" || pow_token) → PoW を取った時点で CSRF も自作可能
-   - 新: GET /submit で random 32B トークンを生成、cookie + form field の double-submit
-   - Cookie: kakekomi_anon_csrf (HttpOnly, SameSite=Strict, Path=/submit, Secure-conditional)
-   - POST 時に cookie 値 == form 値を constant-time 比較
-   - 検証: cookie と _csrf が同一値で送信成功、_pow は完全独立な値
+MEDIUM:
+- M7: LoadSecrets / SaveSecrets で平文 JSON body を defer zero に追加
 
-副次の追加:
-- crypto.go: CaseCodeLookup() 関数 + HMACCaseCodeLookup domain label
-- secrets.go: LookupKey フィールド + NewSecrets() で生成
-- store.go: code_lookup INSERT/SELECT + dummy argon2id でタイミング均一化
-- session.go: NewAnonCSRFToken / VerifyAnonCSRF / setAnonCSRFCookie / readAnonCSRFCookie
-- templates/style.css: 元の inline CSS を移植 (+ input[type=file] と .required スタイル)
-- templates/layout.html: <link rel="stylesheet" href="/static/style.css">
-- handlers.go: renderPublic シグネチャに r *http.Request と anonCSRF を追加、全コールサイト更新
+LOW:
+- L4: PaddedWriter.Flush で pad が 14 バイト未満 (HTML コメント wrapper の最小長) の時に
+  strings.Repeat に負数が渡って panic していた
+  → neededPad() で pad < 14 なら blockSize 分だけ overshoot
 
-E2E 再確認:
-✓ /submit GET → anon CSRF cookie + form _csrf が同一、_pow と独立
-✓ /submit POST → 投稿成功
-✓ /reply 6 cases で wrong/right とも 1500ms±5ms (件数非依存)
-✓ /static/style.css 配信
-✓ HEIC は config validate で reject (allow_mime に入れたら起動エラー)
+検証済:
+✓ /submit POST → CSRF + PoW 両方 → 通常通り成功
+✓ /reply POST without CSRF → 403
+✓ /reply POST with CSRF → 2.5s 固定 wait
+✓ /admin/login POST without CSRF → 403
+✓ Duress with WRONG password → 認証失敗、case 数変わらず
+✓ Duress with CORRECT password → 認証失敗を装いつつ case 全 wipe
+✓ Tor private key with \r\n 注入 → reject
+✓ Tor private key without ED25519-V3: prefix → reject
+✓ build / vet / gofmt / govulncheck 全て clean

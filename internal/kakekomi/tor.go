@@ -101,12 +101,26 @@ func (t *TorControl) AuthenticateCookie(cookieFile string) error {
 
 // AuthenticatePassword sends AUTHENTICATE "password".
 func (t *TorControl) AuthenticatePassword(password string) error {
+	if hasControlBytes(password) {
+		return errors.New("tor password contains forbidden control bytes (\\r/\\n/\\0)")
+	}
 	q := strings.ReplaceAll(password, `"`, `\"`)
 	if err := t.send(fmt.Sprintf(`AUTHENTICATE "%s"`, q)); err != nil {
 		return err
 	}
 	_, _, err := t.readReply()
 	return err
+}
+
+// hasControlBytes rejects values that could inject Tor control protocol commands.
+func hasControlBytes(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\r' || c == '\n' || c == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // AuthenticateAuto tries cookie first (if file given), then password.
@@ -133,6 +147,14 @@ func (t *TorControl) AuthenticateAuto(cookieFile, password string) error {
 //
 // clientPubKeys is optional: if non-empty, the service requires Client Auth.
 func (t *TorControl) AddOnionV3(targetHostPort string, clientPubKeys []string) (serviceID, privKey string, err error) {
+	if hasControlBytes(targetHostPort) {
+		return "", "", errors.New("targetHostPort contains forbidden control bytes")
+	}
+	for _, pk := range clientPubKeys {
+		if hasControlBytes(pk) || strings.ContainsAny(pk, " \t") {
+			return "", "", errors.New("clientPubKey contains forbidden bytes")
+		}
+	}
 	cmd := "ADD_ONION NEW:ED25519-V3 Flags=Detach Port=80," + targetHostPort
 	for _, pk := range clientPubKeys {
 		cmd += " ClientAuthV3=" + pk
@@ -161,6 +183,23 @@ func (t *TorControl) AddOnionV3(targetHostPort string, clientPubKeys []string) (
 // (returned from a previous AddOnionV3). The .onion address stays the same
 // across restarts.
 func (t *TorControl) AddOnionExistingKey(privKey, targetHostPort string, clientPubKeys []string) (string, error) {
+	// C2 fix: a tampered ingress.key file could otherwise inject arbitrary tor
+	// control commands. Tor's KeyBlob format is "ED25519-V3:<base64>" with no
+	// whitespace, no control bytes.
+	if hasControlBytes(privKey) || strings.ContainsAny(privKey, " \t") {
+		return "", errors.New("tor private key contains forbidden bytes")
+	}
+	if !strings.HasPrefix(privKey, "ED25519-V3:") {
+		return "", errors.New("tor private key has unexpected format")
+	}
+	if hasControlBytes(targetHostPort) {
+		return "", errors.New("targetHostPort contains forbidden control bytes")
+	}
+	for _, pk := range clientPubKeys {
+		if hasControlBytes(pk) || strings.ContainsAny(pk, " \t") {
+			return "", errors.New("clientPubKey contains forbidden bytes")
+		}
+	}
 	cmd := "ADD_ONION " + privKey + " Flags=Detach Port=80," + targetHostPort
 	for _, pk := range clientPubKeys {
 		cmd += " ClientAuthV3=" + pk

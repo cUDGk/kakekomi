@@ -161,6 +161,11 @@ func (a *App) processSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// H1 fix: multipart files >32 MiB go to /tmp by default — REMOVE them after
+	// we've consumed the bytes. Otherwise plaintext attachments leak on disk.
+	if r.MultipartForm != nil {
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
+	}
 
 	// Honeypot.
 	if a.Config.Security.Honeypot && strings.TrimSpace(r.FormValue("hp_name")) != "" {
@@ -300,10 +305,25 @@ func (a *App) processSubmit(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleReply(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.renderPublic(w, r, "reply", nil, "", "")
+		csrf, err := a.Sessions.NewAnonCSRFToken()
+		if err != nil {
+			http.Error(w, "csrf gen", http.StatusInternalServerError)
+			return
+		}
+		// C1 fix: /reply now uses double-submit CSRF cookie with Path=/reply.
+		setAnonCSRFCookieAt(w, r, "/reply", csrf)
+		a.renderPublic(w, r, "reply", nil, "", csrf)
 	case http.MethodPost:
-		deadline := time.Now().Add(1500 * time.Millisecond)
+		// H2 fix: extend wait floor to 2.5s — gives headroom over argon2id +
+		// reply decrypt under load so the has-reply / no-reply branch is masked.
+		deadline := time.Now().Add(2500 * time.Millisecond)
 		defer func() { FixedWaitUntil(deadline) }()
+
+		// C1 fix: verify CSRF cookie vs form value (independent of session).
+		if !a.Sessions.VerifyAnonCSRF(readAnonCSRFCookie(r), r.FormValue(CSRFFormField)) {
+			http.Error(w, "CSRF token invalid", http.StatusForbidden)
+			return
+		}
 
 		code := strings.TrimSpace(r.FormValue("code"))
 		if code == "" {
@@ -313,6 +333,10 @@ func (a *App) handleReply(w http.ResponseWriter, r *http.Request) {
 		lookup := CaseCodeLookup(a.Secrets.LookupKey, code)
 		id, err := a.Store.FindCaseByCode(code, lookup)
 		if err != nil {
+			// H2 fix: dummy work to match the has-reply path.
+			dummyKey, _ := HKDFKey([]byte(code), []byte("000000000000000000000000"), HKDFReplyKey, 32)
+			_, _ = DecryptSymmetric(dummyKey, make([]byte, 64))
+			zero(dummyKey)
 			a.renderPublic(w, r, "reply", replyView{Status: "no-match"}, "", "")
 			return
 		}
@@ -332,6 +356,11 @@ func (a *App) handleReply(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+		} else {
+			// H2 fix: also dummy when no reply file exists.
+			dummyKey, _ := HKDFKey([]byte(code), []byte(id), HKDFReplyKey, 32)
+			_, _ = DecryptSymmetric(dummyKey, make([]byte, 64))
+			zero(dummyKey)
 		}
 		a.renderPublic(w, r, "reply", view, "", "")
 	default:
@@ -365,10 +394,23 @@ func (a *App) handleAdminRoot(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.renderPublic(w, r, "admin_login", nil, "", "")
+		csrf, err := a.Sessions.NewAnonCSRFToken()
+		if err != nil {
+			http.Error(w, "csrf gen", http.StatusInternalServerError)
+			return
+		}
+		// H3 fix: /admin/login also gets a double-submit CSRF cookie.
+		setAnonCSRFCookieAt(w, r, "/admin/login", csrf)
+		a.renderPublic(w, r, "admin_login", nil, "", csrf)
 	case http.MethodPost:
 		deadline := time.Now().Add(2 * time.Second)
 		defer func() { FixedWaitUntil(deadline) }()
+
+		// H3 fix: verify CSRF cookie vs form value before doing argon2.
+		if !a.Sessions.VerifyAnonCSRF(readAnonCSRFCookie(r), r.FormValue(CSRFFormField)) {
+			http.Error(w, "CSRF token invalid", http.StatusForbidden)
+			return
+		}
 
 		pw := r.FormValue("password")
 		code := r.FormValue("totp")
@@ -376,13 +418,17 @@ func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 			a.renderPublic(w, r, "admin_login", "認証に失敗しました。", "", "")
 			return
 		}
-		// Duress TOTP — wipe everything and pretend to fail.
-		if a.Secrets.TOTPSecretDuress != "" && totp.Validate(code, a.Secrets.TOTPSecretDuress) {
+		// H5 fix: Duress TOTP requires the CORRECT admin password. Without this
+		// gate, anyone could trigger a wipe by guessing the duress TOTP alone
+		// (~1/10^6 per 30-sec window). Requiring the password preserves
+		// plausible deniability while preventing griefing.
+		passOK := a.Secrets.CheckAdminPassword(pw)
+		if passOK && a.Secrets.TOTPSecretDuress != "" && totp.Validate(code, a.Secrets.TOTPSecretDuress) {
 			_ = a.Store.Wipe()
 			a.renderPublic(w, r, "admin_login", "認証に失敗しました。", "", "")
 			return
 		}
-		if !a.Secrets.CheckAdminPassword(pw) || !totp.Validate(code, a.Secrets.TOTPSecret) {
+		if !passOK || !totp.Validate(code, a.Secrets.TOTPSecret) {
 			a.renderPublic(w, r, "admin_login", "認証に失敗しました。", "", "")
 			return
 		}

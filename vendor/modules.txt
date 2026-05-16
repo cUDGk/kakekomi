@@ -1,9 +1,15 @@
-# filippo.io/age v1.2.0
-## explicit; go 1.19
+# filippo.io/age v1.3.1
+## explicit; go 1.24.0
 filippo.io/age
 filippo.io/age/internal/bech32
 filippo.io/age/internal/format
 filippo.io/age/internal/stream
+# filippo.io/hpke v0.4.0
+## explicit; go 1.24.0
+filippo.io/hpke
+filippo.io/hpke/crypto
+filippo.io/hpke/crypto/ecdh
+filippo.io/hpke/internal/byteorder
 # github.com/awnumar/memcall v0.4.0
 ## explicit; go 1.18
 github.com/awnumar/memcall
@@ -46,8 +52,8 @@ github.com/remyoudompheng/bigfft
 ## explicit; go 1.14
 github.com/tyler-smith/go-bip39
 github.com/tyler-smith/go-bip39/wordlists
-# golang.org/x/crypto v0.41.0
-## explicit; go 1.23.0
+# golang.org/x/crypto v0.51.0
+## explicit; go 1.25.0
 golang.org/x/crypto/argon2
 golang.org/x/crypto/blake2b
 golang.org/x/crypto/chacha20
@@ -58,7 +64,6 @@ golang.org/x/crypto/internal/alias
 golang.org/x/crypto/internal/poly1305
 golang.org/x/crypto/nacl/secretbox
 golang.org/x/crypto/pbkdf2
-golang.org/x/crypto/poly1305
 golang.org/x/crypto/salsa20/salsa
 golang.org/x/crypto/scrypt
 # golang.org/x/image v0.40.0
@@ -69,8 +74,8 @@ golang.org/x/image/vp8l
 golang.org/x/image/webp
 # golang.org/x/sync v0.20.0
 ## explicit; go 1.25.0
-# golang.org/x/sys v0.35.0
-## explicit; go 1.23.0
+# golang.org/x/sys v0.44.0
+## explicit; go 1.25.0
 golang.org/x/sys/cpu
 golang.org/x/sys/unix
 golang.org/x/sys/windows

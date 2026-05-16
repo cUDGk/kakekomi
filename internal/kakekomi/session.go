@@ -119,14 +119,20 @@ func (s *SessionStore) VerifyAnonCSRF(cookieValue, formValue string) bool {
 }
 
 func setAnonCSRFCookie(w http.ResponseWriter, r *http.Request, value string) {
+	setAnonCSRFCookieAt(w, r, "/submit", value)
+}
+
+// setAnonCSRFCookieAt allows the cookie Path to be scoped per form
+// (so /submit and /reply don't share the same cookie value).
+func setAnonCSRFCookieAt(w http.ResponseWriter, r *http.Request, path, value string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     AnonCSRFCookie,
 		Value:    value,
-		Path:     "/submit",
+		Path:     path,
 		HttpOnly: true,
 		Secure:   secureContext(r),
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   600, // 10 min; form must be filled within this window
+		MaxAge:   600,
 	})
 }
 

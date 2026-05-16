@@ -77,10 +77,7 @@ func (w *WrappedBase64Encoder) writeWrapped(p []byte) (int, error) {
 		panic("age: internal error: non-empty WrappedBase64Encoder.buf")
 	}
 	for len(p) > 0 {
-		toWrite := ColumnsPerLine - (w.written % ColumnsPerLine)
-		if toWrite > len(p) {
-			toWrite = len(p)
-		}
+		toWrite := min(ColumnsPerLine-(w.written%ColumnsPerLine), len(p))
 		n, _ := w.buf.Write(p[:toWrite])
 		w.written += n
 		p = p[n:]
@@ -201,7 +198,7 @@ func (r *StanzaReader) ReadStanza() (s *Stanza, err error) {
 		b, err := DecodeString(strings.TrimSuffix(string(line), "\n"))
 		if err != nil {
 			if bytes.HasPrefix(line, footerPrefix) || bytes.HasPrefix(line, stanzaPrefix) {
-				return nil, fmt.Errorf("malformed body line %q: stanza ended without a short line\nNote: this might be a file encrypted with an old beta version of age or rage. Use age v1.0.0-beta6 or rage to decrypt it.", line)
+				return nil, fmt.Errorf("malformed body line %q: stanza ended without a short line\nnote: this might be a file encrypted with an old beta version of age or rage; use age v1.0.0-beta6 or rage to decrypt it", line)
 			}
 			return nil, errorf("malformed body line %q: %v", line, err)
 		}
@@ -228,7 +225,7 @@ func (e *ParseError) Unwrap() error {
 	return e.err
 }
 
-func errorf(format string, a ...interface{}) error {
+func errorf(format string, a ...any) error {
 	return &ParseError{fmt.Errorf(format, a...)}
 }
 
@@ -239,7 +236,9 @@ func Parse(input io.Reader) (*Header, io.Reader, error) {
 	rr := bufio.NewReader(input)
 
 	line, err := rr.ReadString('\n')
-	if err != nil {
+	if err == io.EOF {
+		return nil, nil, errorf("file is empty")
+	} else if err != nil {
 		return nil, nil, errorf("failed to read intro: %w", err)
 	}
 	if line != intro {

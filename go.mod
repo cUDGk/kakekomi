@@ -3,18 +3,19 @@ module github.com/cUDGk/kakekomi
 go 1.25.0
 
 require (
-	filippo.io/age v1.2.0
+	filippo.io/age v1.3.1
 	github.com/awnumar/memguard v0.23.0
 	github.com/pquerna/otp v1.5.0
 	github.com/tyler-smith/go-bip39 v1.1.0
-	golang.org/x/crypto v0.41.0
+	golang.org/x/crypto v0.51.0
 	golang.org/x/image v0.40.0
-	golang.org/x/sys v0.35.0
+	golang.org/x/sys v0.44.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.30.0
 )
 
 require (
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/awnumar/memcall v0.4.0 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

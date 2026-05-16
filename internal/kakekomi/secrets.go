@@ -97,6 +97,8 @@ func SaveSecrets(dataDir, passphrase string, s *Secrets) error {
 	if err != nil {
 		return err
 	}
+	// M7 fix: body contains plaintext secrets — zero after encryption.
+	defer zero(body)
 	master := DeriveMasterKey(passphrase, s.MasterSalt)
 	defer zero(master)
 	blob, err := EncryptSymmetric(master, body)
@@ -131,6 +133,8 @@ func LoadSecrets(dataDir, passphrase string) (*Secrets, error) {
 	if err != nil {
 		return nil, errors.New("secrets decrypt failed — wrong passphrase or corrupted secrets.age")
 	}
+	// M7 fix: zero the plaintext JSON after Unmarshal copies its byte fields.
+	defer zero(body)
 	var s Secrets
 	if err := json.Unmarshal(body, &s); err != nil {
 		return nil, fmt.Errorf("parse secrets: %w", err)

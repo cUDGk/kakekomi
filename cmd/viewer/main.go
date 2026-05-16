@@ -121,6 +121,10 @@ func unwrapEnvelope(blob []byte) (version uint16, payload []byte, err error) {
 }
 
 func extractTar(data []byte, dir string) error {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
 	tr := tar.NewReader(bytes.NewReader(data))
 	for {
 		h, err := tr.Next()
@@ -130,12 +134,20 @@ func extractTar(data []byte, dir string) error {
 		if err != nil {
 			return err
 		}
-		// Reject paths that try to escape outDir.
-		cleaned := filepath.Clean(h.Name)
-		if strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
-			return fmt.Errorf("refusing unsafe path: %s", h.Name)
+		// C3 fix: reject anything that smells like an escape:
+		//   - absolute paths (Unix-style)
+		//   - Windows drive letters or UNC paths
+		//   - any segment that is ".."
+		//   - control bytes / NUL
+		if !safeTarName(h.Name) {
+			return fmt.Errorf("refusing unsafe path: %q", h.Name)
 		}
-		target := filepath.Join(dir, cleaned)
+		cleaned := filepath.Clean(filepath.FromSlash(h.Name))
+		target := filepath.Join(absDir, cleaned)
+		// Double-check after Clean+Join that we stayed inside absDir.
+		if !strings.HasPrefix(target+string(filepath.Separator), absDir+string(filepath.Separator)) && target != absDir {
+			return fmt.Errorf("path escapes output dir: %q", h.Name)
+		}
 		switch h.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0700); err != nil {
@@ -157,8 +169,43 @@ func extractTar(data []byte, dir string) error {
 			if h.Name == "meta.json" {
 				prettyPrintMeta(target)
 			}
+		case tar.TypeSymlink, tar.TypeLink:
+			// C3 fix: refuse, never materialize. A subsequent regular file write
+			// could otherwise follow the symlink and escape outDir.
+			return fmt.Errorf("refusing symlink/hardlink in archive: %q", h.Name)
+		default:
+			return fmt.Errorf("refusing unknown tar entry type %c for %q", h.Typeflag, h.Name)
 		}
 	}
+}
+
+func safeTarName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		if c == 0 || c == '\r' || c == '\n' {
+			return false
+		}
+	}
+	// Reject Windows drive letters and UNC.
+	if len(name) >= 2 && name[1] == ':' {
+		return false
+	}
+	if strings.HasPrefix(name, `\\`) || strings.HasPrefix(name, "//") {
+		return false
+	}
+	if strings.HasPrefix(name, "/") {
+		return false
+	}
+	// Reject any segment equal to ".." (catches "foo/../bar" too).
+	parts := strings.Split(strings.ReplaceAll(name, `\`, `/`), `/`)
+	for _, p := range parts {
+		if p == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func prettyPrintMeta(path string) {

@@ -37,20 +37,32 @@ func (p *PaddedWriter) Flush() error {
 	body := p.buf.String()
 	pad := neededPad(len(body))
 	if pad > 0 {
-		body += "\n<!-- pad:"
-		body += strings.Repeat("x", pad-len("\n<!-- pad:")-len(" -->"))
-		body += " -->"
+		const prefix = "\n<!-- pad:"
+		const suffix = " -->"
+		body += prefix
+		body += strings.Repeat("x", pad-len(prefix)-len(suffix))
+		body += suffix
 	}
 	_, err := p.inner.Write([]byte(body))
 	return err
 }
 
+// neededPad returns the bytes to add so the body lands on a blockSize boundary.
+// L4 fix: ensure the result is at least 14 bytes so the HTML-comment wrapper
+// (10 + 4 = 14 chars) fits without strings.Repeat receiving a negative count.
 func neededPad(n int) int {
 	r := n % blockSize
 	if r == 0 {
 		return 0
 	}
-	return blockSize - r
+	p := blockSize - r
+	const minPad = 14
+	if p < minPad {
+		// Overshoot to the next block. Slightly worse padding hygiene but
+		// avoids a runtime panic on a degenerate body length.
+		p += blockSize
+	}
+	return p
 }
 
 // FixedWaitUntil sleeps until deadline. If now >= deadline, returns immediately.
