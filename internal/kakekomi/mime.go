@@ -9,12 +9,15 @@ import (
 
 // safeMIMEs are the only MIME types accepted in v1. PDF/Office/SVG/video/audio
 // are rejected wholesale because their metadata-removal is non-trivial.
+//
+// HEIC was previously listed but is now rejected: pure-Go decoders do not
+// exist, and accepting HEIC without re-encoding would pass camera-side metadata
+// through unchanged. iPhone users should convert to JPEG/PNG before uploading.
 var safeMIMEs = map[string]bool{
 	"image/jpeg": true,
 	"image/png":  true,
 	"image/webp": true,
 	"image/gif":  true,
-	"image/heic": true,
 	"text/plain": true,
 }
 

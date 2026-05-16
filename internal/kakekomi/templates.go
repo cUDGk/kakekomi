@@ -5,7 +5,7 @@ import (
 	"html/template"
 )
 
-//go:embed templates/*.html
+//go:embed templates/*.html templates/*.css
 var tmplFS embed.FS
 
 // loadTemplates parses layout.html + each page template into its own *Template.

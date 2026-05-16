@@ -20,6 +20,7 @@ type Store struct {
 const schema = `
 CREATE TABLE IF NOT EXISTS cases (
     id            TEXT PRIMARY KEY,
+    code_lookup   BLOB NOT NULL,           -- HMAC(server_lookup_key, code) for O(1) /reply
     code_hash     BLOB NOT NULL,
     code_salt     BLOB NOT NULL,
     created_at    INTEGER NOT NULL,        -- rounded to hour (SPEC F-73)
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS cases (
     has_reply     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_cases_expires_at ON cases(expires_at);
+CREATE INDEX IF NOT EXISTS idx_cases_code_lookup ON cases(code_lookup);
 `
 
 func OpenStore(dataDir string) (*Store, error) {
@@ -78,7 +80,10 @@ func isUniqueErr(err error) bool {
 // CreateCase inserts case metadata with a fresh ID (with collision retry),
 // then writes the encrypted submission blob to <data>/blob/<id>/case-data.tar.age.
 // Returns the case ID used.
-func (s *Store) CreateCase(codeHash, codeSalt []byte, ttl time.Duration, blob []byte) (string, error) {
+//
+// codeLookup is a server-secret HMAC of the code (see CaseCodeLookup) that
+// the receiver-side keeps in memory only. It enables O(1) /reply lookup.
+func (s *Store) CreateCase(codeLookup, codeHash, codeSalt []byte, ttl time.Duration, blob []byte) (string, error) {
 	const maxRetries = 5
 	// SPEC F-73: timestamp rounded to hour.
 	now := time.Now().UTC().Truncate(time.Hour)
@@ -90,8 +95,8 @@ func (s *Store) CreateCase(codeHash, codeSalt []byte, ttl time.Duration, blob []
 			return "", err
 		}
 		_, err = s.db.Exec(
-			`INSERT INTO cases (id, code_hash, code_salt, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
-			id, codeHash, codeSalt, now.Unix(), expires,
+			`INSERT INTO cases (id, code_lookup, code_hash, code_salt, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+			id, codeLookup, codeHash, codeSalt, now.Unix(), expires,
 		)
 		if err == nil {
 			if mkerr := os.MkdirAll(s.caseDir(id), 0700); mkerr != nil {
@@ -186,35 +191,32 @@ func (s *Store) ReadReply(id string) ([]byte, error) {
 	return os.ReadFile(s.replyPath(id))
 }
 
-// FindCaseByCode walks every case, full-scan, late-return. See HARDENING §L0.5.
-func (s *Store) FindCaseByCode(code string) (string, error) {
-	rows, err := s.db.Query(`SELECT id, code_salt, code_hash FROM cases`)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-
-	var foundID string
-	var found int
-	for rows.Next() {
-		var id string
-		var salt, hash []byte
-		if err := rows.Scan(&id, &salt, &hash); err != nil {
-			return "", err
-		}
-		match := VerifyCode(code, salt, hash)
-		if match && found == 0 {
-			foundID = id
-			found = 1
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-	if found == 0 {
+// FindCaseByCode looks up by the indexed HMAC, then runs ONE argon2id verify.
+// Total time is independent of case count: a SELECT returning 0-or-1 rows plus
+// exactly one argon2id evaluation (with a dummy salt if no row matches).
+//
+// codeLookup is HMAC(secrets.LookupKey, code) — the caller computes it.
+func (s *Store) FindCaseByCode(code string, codeLookup []byte) (string, error) {
+	row := s.db.QueryRow(
+		`SELECT id, code_salt, code_hash FROM cases WHERE code_lookup = ? LIMIT 1`,
+		codeLookup,
+	)
+	var id string
+	var salt, hash []byte
+	err := row.Scan(&id, &salt, &hash)
+	switch {
+	case err == sql.ErrNoRows:
+		// Run a dummy argon2id verify to keep wall-time independent of presence.
+		dummy := make([]byte, 16)
+		_ = HashCode(code, dummy)
 		return "", errors.New("code not found")
+	case err != nil:
+		return "", err
 	}
-	return foundID, nil
+	if VerifyCode(code, salt, hash) {
+		return id, nil
+	}
+	return "", errors.New("code not found")
 }
 
 // GC deletes expired cases (DB row + blob dir).

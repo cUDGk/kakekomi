@@ -200,7 +200,7 @@ func readPassphrase(prompt string) (string, error) {
 
 // withSecurityHeaders applies SPEC §3.8 + HARDENING §L4.1 headers.
 func withSecurityHeaders(h http.Handler) http.Handler {
-	const csp = "default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; " +
+	const csp = "default-src 'none'; img-src 'self'; style-src 'self'; " +
 		"form-action 'self'; frame-ancestors 'none'; base-uri 'none'; " +
 		"require-trusted-types-for 'script'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

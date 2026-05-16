@@ -22,6 +22,7 @@ type App struct {
 
 func (a *App) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/", a.handleIndex)
+	mux.HandleFunc("/static/style.css", a.handleStaticCSS)
 	mux.HandleFunc("/submit", a.handleSubmit)
 	mux.HandleFunc("/reply", a.handleReply)
 
@@ -32,6 +33,19 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/case/", a.requireAuth(a.handleAdminCase))
 	mux.HandleFunc("/admin/reply/", a.requireAuth(a.handleAdminReply))
 	mux.HandleFunc("/admin/download/", a.requireAuth(a.handleAdminDownload))
+}
+
+// handleStaticCSS serves the single CSS file from embed.FS. Keeping it inline
+// in a handler (rather than http.FileServer) preserves the global security
+// headers + padding contract.
+func (a *App) handleStaticCSS(w http.ResponseWriter, r *http.Request) {
+	b, err := tmplFS.ReadFile("templates/style.css")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	_, _ = w.Write(b)
 }
 
 type pageData struct {
@@ -67,8 +81,9 @@ func (a *App) render(w http.ResponseWriter, r *http.Request, name string, data a
 	_ = pw.Flush()
 }
 
-// renderPublic is like render but uses an anonymous-CSRF tied to a PoW token.
-func (a *App) renderPublic(w http.ResponseWriter, name string, data any, powToken string) {
+// renderPublic is like render but allows passing PoW + anon CSRF independently.
+// anonCSRF (if non-empty) is also set as a cookie on the response.
+func (a *App) renderPublic(w http.ResponseWriter, r *http.Request, name string, data any, powToken, anonCSRF string) {
 	t, ok := a.Templates[name]
 	if !ok {
 		http.Error(w, "template not found: "+name, http.StatusInternalServerError)
@@ -79,10 +94,11 @@ func (a *App) renderPublic(w http.ResponseWriter, name string, data any, powToke
 		SiteIntro: a.Config.Site.Intro,
 		Honeypot:  a.Config.Security.Honeypot,
 		PoWToken:  powToken,
+		CSRF:      anonCSRF,
 		Data:      data,
 	}
-	if powToken != "" {
-		pd.CSRF = a.Sessions.AnonCSRFToken(powToken)
+	if anonCSRF != "" {
+		setAnonCSRFCookie(w, r, anonCSRF)
 	}
 	pw := NewPaddedWriter(w)
 	pw.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -100,7 +116,7 @@ func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	a.renderPublic(w, "index", nil, "")
+	a.renderPublic(w, r, "index", nil, "", "")
 }
 
 type submitForm struct {
@@ -112,7 +128,14 @@ func (a *App) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		tok := IssuePoWToken(a.Secrets.SessionMACKey)
-		a.renderPublic(w, "submit", submitForm{Fields: a.Config.Fields, Attachments: a.Config.Attachments}, tok)
+		csrf, err := a.Sessions.NewAnonCSRFToken()
+		if err != nil {
+			http.Error(w, "csrf gen", http.StatusInternalServerError)
+			return
+		}
+		a.renderPublic(w, r, "submit",
+			submitForm{Fields: a.Config.Fields, Attachments: a.Config.Attachments},
+			tok, csrf)
 	case http.MethodPost:
 		a.processSubmit(w, r)
 	default:
@@ -142,21 +165,23 @@ func (a *App) processSubmit(w http.ResponseWriter, r *http.Request) {
 	// Honeypot.
 	if a.Config.Security.Honeypot && strings.TrimSpace(r.FormValue("hp_name")) != "" {
 		// Pretend success but discard.
-		a.renderPublic(w, "done", "honeypot triggered", "")
+		a.renderPublic(w, r, "done", "honeypot triggered", "", "")
 		return
 	}
 
-	// PoW + CSRF.
+	// CSRF: double-submit cookie. Independent of PoW.
+	if !a.Sessions.VerifyAnonCSRF(readAnonCSRFCookie(r), r.FormValue(CSRFFormField)) {
+		http.Error(w, "CSRF token invalid", http.StatusForbidden)
+		return
+	}
+
+	// PoW.
 	powTok := r.FormValue("_pow")
 	if a.Config.Security.PoW.Enabled {
 		if err := VerifyPoWToken(a.Secrets.SessionMACKey, powTok); err != nil {
 			http.Error(w, "PoW token invalid or expired", http.StatusForbidden)
 			return
 		}
-	}
-	if !a.Sessions.VerifyAnonCSRF(powTok, r.FormValue(CSRFFormField)) {
-		http.Error(w, "CSRF token invalid", http.StatusForbidden)
-		return
 	}
 	if a.Config.Security.PoW.Enabled {
 		PoWWork(powTok, a.Config.Security.PoW.HashChainCost)
@@ -238,6 +263,7 @@ func (a *App) processSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hash := HashCode(code, salt)
+	lookup := CaseCodeLookup(a.Secrets.LookupKey, code)
 
 	// Pack + encrypt.
 	env := SubmissionEnvelope{
@@ -261,12 +287,12 @@ func (a *App) processSubmit(w http.ResponseWriter, r *http.Request) {
 	if ttl <= 0 {
 		ttl = 90 * 24 * time.Hour
 	}
-	if _, err := a.Store.CreateCase(hash, salt, ttl, ciphertext); err != nil {
+	if _, err := a.Store.CreateCase(lookup, hash, salt, ttl, ciphertext); err != nil {
 		http.Error(w, "store error", http.StatusInternalServerError)
 		return
 	}
 
-	a.renderPublic(w, "done", code, "")
+	a.renderPublic(w, r, "done", code, "", "")
 }
 
 // ─── public reply (visitor) ─────────────────────────────────
@@ -274,7 +300,7 @@ func (a *App) processSubmit(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleReply(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.renderPublic(w, "reply", nil, "")
+		a.renderPublic(w, r, "reply", nil, "", "")
 	case http.MethodPost:
 		deadline := time.Now().Add(1500 * time.Millisecond)
 		defer func() { FixedWaitUntil(deadline) }()
@@ -284,9 +310,10 @@ func (a *App) handleReply(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "code required", http.StatusBadRequest)
 			return
 		}
-		id, err := a.Store.FindCaseByCode(code)
+		lookup := CaseCodeLookup(a.Secrets.LookupKey, code)
+		id, err := a.Store.FindCaseByCode(code, lookup)
 		if err != nil {
-			a.renderPublic(w, "reply", replyView{Status: "no-match"}, "")
+			a.renderPublic(w, r, "reply", replyView{Status: "no-match"}, "", "")
 			return
 		}
 		// Read reply blob (if any) and decrypt with HKDF(code).
@@ -306,7 +333,7 @@ func (a *App) handleReply(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		a.renderPublic(w, "reply", view, "")
+		a.renderPublic(w, r, "reply", view, "", "")
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -338,7 +365,7 @@ func (a *App) handleAdminRoot(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.renderPublic(w, "admin_login", nil, "")
+		a.renderPublic(w, r, "admin_login", nil, "", "")
 	case http.MethodPost:
 		deadline := time.Now().Add(2 * time.Second)
 		defer func() { FixedWaitUntil(deadline) }()
@@ -346,17 +373,17 @@ func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		pw := r.FormValue("password")
 		code := r.FormValue("totp")
 		if pw == "" || code == "" {
-			a.renderPublic(w, "admin_login", "認証に失敗しました。", "")
+			a.renderPublic(w, r, "admin_login", "認証に失敗しました。", "", "")
 			return
 		}
 		// Duress TOTP — wipe everything and pretend to fail.
 		if a.Secrets.TOTPSecretDuress != "" && totp.Validate(code, a.Secrets.TOTPSecretDuress) {
 			_ = a.Store.Wipe()
-			a.renderPublic(w, "admin_login", "認証に失敗しました。", "")
+			a.renderPublic(w, r, "admin_login", "認証に失敗しました。", "", "")
 			return
 		}
 		if !a.Secrets.CheckAdminPassword(pw) || !totp.Validate(code, a.Secrets.TOTPSecret) {
-			a.renderPublic(w, "admin_login", "認証に失敗しました。", "")
+			a.renderPublic(w, r, "admin_login", "認証に失敗しました。", "", "")
 			return
 		}
 		sess, err := a.Sessions.New()
@@ -496,7 +523,8 @@ func (a *App) handleAdminReply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Verify code belongs to this case (constant-time-ish via FindCaseByCode).
-		matchedID, err := a.Store.FindCaseByCode(code)
+		lookup := CaseCodeLookup(a.Secrets.LookupKey, code)
+		matchedID, err := a.Store.FindCaseByCode(code, lookup)
 		if err != nil || matchedID != c.ID {
 			a.render(w, r, "admin_reply", replyAdminView{ID: c.ID, Status: "コードが一致しません", HasReply: c.HasReply})
 			return

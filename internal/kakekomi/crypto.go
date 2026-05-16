@@ -2,6 +2,7 @@ package kakekomi
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -34,14 +35,15 @@ const (
 	masterArgonKeyLen  = 32
 )
 
-// Domain-separation labels for HKDF.
+// Domain-separation labels for HKDF / HMAC derivations.
 // HARDENING.md §L0.1: every derived key gets a unique versioned label.
 const (
-	HKDFReplyKey   = "kakekomi/v1/reply-key"
-	HKDFMasterAge  = "kakekomi/v1/master-age-identity"
-	HKDFCSRFKey    = "kakekomi/v1/csrf-key"
-	HKDFSessionKey = "kakekomi/v1/session-key"
-	HKDFPoWKey     = "kakekomi/v1/pow-challenge"
+	HKDFReplyKey       = "kakekomi/v1/reply-key"
+	HKDFMasterAge      = "kakekomi/v1/master-age-identity"
+	HKDFCSRFKey        = "kakekomi/v1/csrf-key"
+	HKDFSessionKey     = "kakekomi/v1/session-key"
+	HKDFPoWKey         = "kakekomi/v1/pow-challenge"
+	HMACCaseCodeLookup = "kakekomi/v1/case-code-lookup"
 )
 
 // Envelope header (versioned blob format, HARDENING.md §L0.3).
@@ -79,6 +81,17 @@ func GenerateCode() (string, error) {
 		out[i] = words[idx]
 	}
 	return strings.Join(out, " "), nil
+}
+
+// CaseCodeLookup is a fast HMAC of the case code with a server-secret key.
+// It's stored in the DB and indexed so /reply lookups are O(1) instead of
+// O(N) over all cases with argon2id. Offline brute-force against this hash
+// requires the LookupKey (32 random bytes in secrets.age).
+func CaseCodeLookup(lookupKey []byte, code string) []byte {
+	mac := hmac.New(sha256.New, lookupKey)
+	mac.Write([]byte(HMACCaseCodeLookup))
+	mac.Write([]byte(code))
+	return mac.Sum(nil)
 }
 
 // HashCode derives an argon2id hash of code with the given salt (per-case verification).

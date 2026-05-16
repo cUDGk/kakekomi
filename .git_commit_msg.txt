@@ -1,99 +1,45 @@
-feat: Phase 2-8 完全実装 (Tor 統合除く部分はコード上は実装、Tor は外部設定)
+fix(post-p8): バグ 1-4 を塞ぐ + 検証
 
-Phase 2: 添付ファイル
-- 画像 (jpeg/png/webp/gif) + plain text のみ受信、PDF/Office/SVG/動画/音声は拒否
-- MIME マジックバイト検証 (拡張子を信用しない)
-- EXIF/XMP/ICC を decode → encode で除去、画像は再エンコード (PRNU 緩和)
-- multipart/form-data ハンドリング + 個別/合計サイズ上限
-- tar packing (meta.json + attachments/) + PKCS#7-style 64 KiB padding
-- 検証済: 1363 → 1143 bytes (EXIF block 除去)
+1. HEIC を default/safe MIME から除外
+   - 旧: image/heic を allow_mime に入れていたが StripImageMetadata に case なし → メタ素通り
+   - 新: safeMIMEs と DefaultConfig.AllowedMIME 両方から削除、コメントで理由明記
+   - iPhone ユーザは JPEG/PNG に変換してから投稿する運用
 
-Phase 3: Tor 統合 (コード実装、外部 tor 必要)
-- 自前 Tor Control 客 (stdlib のみ、外部依存なし)
-- AUTHENTICATE (cookie / password / null auth 自動)
-- ADD_ONION new:ED25519-V3 で .onion v3 を動的発行 (Flags=Detach)
-- ADD_ONION で既存秘密鍵から復帰 → 同じ .onion アドレスを維持
-- ClientAuthV3 で管理 onion を Client Auth 必須化
-- config.tor.enabled で on/off、--no-tor フラグで run 時に強制 off
+2. CSP から 'unsafe-inline' 削除
+   - CSS を layout.html の inline から templates/style.css に分離
+   - /static/style.css ハンドラを追加 (embed.FS から配信、独自に Content-Type: text/css)
+   - CSP: style-src 'self' (unsafe-inline なし)
+   - 検証: CSP ヘッダから unsafe-inline 消失 + /static/style.css = 200/2016 bytes
 
-Phase 4: 受信者認証 + セッション + CSRF
-- /admin/login (password + TOTP)
-- セッション: in-memory only / 15 分 idle 失効 / HttpOnly / SameSite=Strict
-- Secure 属性は .onion / TLS でのみ立てる (localhost テスト時は落とす)
-- CSRF: HMAC(csrf_key, session_token) の double-submit token
-- 匿名 form (/submit) の CSRF は PoW token に紐付け
-- 全 POST が CSRF 検証
+3. /reply timing leak 解消 (O(N) → O(1))
+   - cases.code_lookup BLOB 列 + INDEX を追加
+   - code_lookup = HMAC-SHA256(secrets.LookupKey, code), domain label = "kakekomi/v1/case-code-lookup"
+   - secrets.age に LookupKey (32B random) を追加
+   - FindCaseByCode: SELECT WHERE code_lookup = ? LIMIT 1 → 0 or 1 row
+   - 1 row の場合のみ argon2id 検証、0 row でも dummy argon2id で時間を均す
+   - 検証 (6 cases / 5x bulk submit 後):
+       wrong: 1508/1507/1503 ms
+       right: 1507 ms (差 5 ms 以内、件数非依存)
 
-Phase 5: HKDF(code) 双方向通信
-- 受信者→通報者の返信は HKDF-SHA256(code, case_id, "kakekomi/v1/reply-key") で対称鍵派生
-- ChaCha20-Poly1305 (XChaCha20) で暗号化
-- 通報者は /reply でコードを入力 → サーバが復号して表示
-- 検証済: 受信者が code 入力 → reply 保存 → 通報者が /reply で復号読出し成功
+4. 匿名 CSRF を PoW token から独立
+   - 旧: CSRF = HMAC(csrf_key, "anon-csrf" || pow_token) → PoW を取った時点で CSRF も自作可能
+   - 新: GET /submit で random 32B トークンを生成、cookie + form field の double-submit
+   - Cookie: kakekomi_anon_csrf (HttpOnly, SameSite=Strict, Path=/submit, Secure-conditional)
+   - POST 時に cookie 値 == form 値を constant-time 比較
+   - 検証: cookie と _csrf が同一値で送信成功、_pow は完全独立な値
 
-Phase 6: PoW + size/timing 完全正規化 + pubkey pinning
-- サーバ側 PoW: HMAC token 発行 + 5 分 lifetime + SHA-256 hash chain (~65k iter)
-- ブラウザ JS 不要 (Tor Browser "Safest" モード対応)
-- pubkey.lock: sha256(receiver.pub) を起動時に照合、不一致なら起動拒否
-- timestamp は 1 時間粒度に丸めて保存・表示 (SPEC F-73)
-- size bucket 表示 (<100KB / 100KB-1MB / 1-10MB / >10MB)
-- レスポンスを 4 KiB 境界に padding (HTML コメントで)
-- /submit に 2 秒固定 wait、/reply と /admin/login に 1.5/2 秒固定 wait
+副次の追加:
+- crypto.go: CaseCodeLookup() 関数 + HMACCaseCodeLookup domain label
+- secrets.go: LookupKey フィールド + NewSecrets() で生成
+- store.go: code_lookup INSERT/SELECT + dummy argon2id でタイミング均一化
+- session.go: NewAnonCSRFToken / VerifyAnonCSRF / setAnonCSRFCookie / readAnonCSRFCookie
+- templates/style.css: 元の inline CSS を移植 (+ input[type=file] と .required スタイル)
+- templates/layout.html: <link rel="stylesheet" href="/static/style.css">
+- handlers.go: renderPublic シグネチャに r *http.Request と anonCSRF を追加、全コールサイト更新
 
-Phase 7: secrets.age + KDF master_key + Duress TOTP
-- パスフレーズ → argon2id (256MiB / time=4 / threads=4) → master_key
-- TOTP normal + duress / admin password hash / CSRF/Session MAC keys を ChaCha20-Poly1305 で暗号化保存
-- run 起動時に stdin からパスフレーズ → in-memory 復号、起動完了後は master_key を zero 化
-- Duress TOTP: 第二の TOTP で login すると全 case を shred + DB VACUUM、画面は通常の失敗と区別不能
-- 検証済: 3 case あった blob/ が duress login で 0 case に、画面は "認証に失敗しました"
-
-Phase 8: viewer 別バイナリ + CI/release infrastructure
-- cmd/viewer/main.go: build tag `airgap` で net パッケージ排除
-- 3.9 MB バイナリ、ネットワーク機能ゼロ
-- 機能: age 復号 + envelope (KKK1) parse + tar 安全展開 (path traversal 拒否)
-- .github/workflows/ci.yml: gofmt / go vet / govulncheck / test / race
-- .github/workflows/release.yml:
-  - クロスコンパイル (linux amd64/arm64, darwin arm64, windows amd64)
-  - reproducible build (-trimpath -buildvcs -ldflags='-s -w -buildid=')
-  - SBOM (CycloneDX via anchore/sbom-action)
-  - SLSA build provenance (actions/attest-build-provenance)
-  - cosign keyless 署名 (OIDC)
-  - SHA256SUMS aggregation + GH release with verify instructions
-- go mod vendor で依存を vendored (HARDENING §L6.4)
-
-基盤・横断的な追加:
-- Versioned envelope (KKK1 magic + 2B version + 2B reserved + payload)
-  → 将来 post-quantum 移行時に version=2 で旧 blob も読める
-- Domain-separated HKDF labels (kakekomi/v1/<purpose>)
-- prctl(PR_SET_DUMPABLE, 0) + PR_SET_NO_NEW_PRIVS on Linux (build-tagged)
-- memguard 統合 (LockedBuffer for sensitive material; mlock/VirtualLock)
-- math/rand 禁止 (random.go が唯一の RNG エントリ)
-- 全レスに strict CSP / no-store / X-Frame-Options=DENY / no-referrer
-- HTTP/2 + keep-alive 明示無効
-- DefaultTransport を nil 化 (外向き HTTP 不可)
-- shred-on-delete (zero fill before unlink) + SQLite VACUUM
-- WAL モード + busy_timeout(5000) で SQLite
-
-CLI 追加:
-- kakekomi gc          (TTL sweep)
-- kakekomi rotate-key  (age 鍵ローテ + old pubkey archive)
-- kakekomi config validate
-- kakekomi-viewer decrypt  (air-gap 復号)
-
-E2E 検証済:
-✓ init: passphrase + admin + TOTP(normal+duress) → config + pubkey.lock + secrets.age
-✓ run: passphrase で secrets.age 復号、HTTP server 起動
-✓ /submit: PoW + CSRF + honeypot 検証 → envelope ciphertext で blob 保存 → BIP39 code 返却
-✓ /admin/login: password + TOTP → session cookie (Path=/admin, SameSite=Strict)
-✓ /admin/inbox: size bucket 表示
-✓ /admin/download/:id: ciphertext を DL
-✓ kakekomi-viewer decrypt: envelope unwrap → age 復号 → tar 展開 → meta.json + attachments/
-✓ /admin/reply/:id: code 入力で HKDF 派生 → ChaCha20-Poly1305 で reply 暗号化
-✓ /reply: code 入力 → 復号して受信者の返信を表示
-✓ Duress TOTP: 全 case wipe + 通常失敗を装う
-✓ 画像添付: 1363 bytes (EXIF block 入り) → 1143 bytes (再エンコード)
-
-未実装/外部依存:
-- Tor の実機テスト (control port が動いている tor.exe が必要)
-- SLSA Level 3 attestation の実際の発行 (GitHub Actions 上でのみ可能)
-- cosign 署名 (CI 上でのみ実行)
-- 第三者監査 (これは v1.0.0 までの必須条件として残る)
+E2E 再確認:
+✓ /submit GET → anon CSRF cookie + form _csrf が同一、_pow と独立
+✓ /submit POST → 投稿成功
+✓ /reply 6 cases で wrong/right とも 1500ms±5ms (件数非依存)
+✓ /static/style.css 配信
+✓ HEIC は config validate で reject (allow_mime に入れたら起動エラー)

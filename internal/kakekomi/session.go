@@ -95,18 +95,47 @@ func (s *SessionStore) VerifyCSRF(sessionToken, formToken string) bool {
 	return hmac.Equal([]byte(want), []byte(strings.TrimSpace(formToken)))
 }
 
-// AnonCSRFToken is for unauthenticated forms (the public /submit form).
-// Bound to the PoW token so each submit page has its own CSRF.
-func (s *SessionStore) AnonCSRFToken(powToken string) string {
-	mac := hmac.New(sha256.New, s.csrfKey)
-	mac.Write([]byte("kakekomi/v1/anon-csrf"))
-	mac.Write([]byte(powToken))
-	return hex.EncodeToString(mac.Sum(nil))
+// AnonCSRFCookie is the cookie name for unauthenticated form CSRF tokens.
+// Uses the double-submit cookie pattern: on GET we set a random value as
+// both a cookie and an embedded form field; on POST we constant-time compare
+// the two. SameSite=Strict + HttpOnly prevent cross-origin reading or sending.
+const AnonCSRFCookie = "kakekomi_anon_csrf"
+
+// NewAnonCSRFToken returns 32 random bytes hex-encoded.
+func (s *SessionStore) NewAnonCSRFToken() (string, error) {
+	var b [32]byte
+	if _, err := readRandom(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
-func (s *SessionStore) VerifyAnonCSRF(powToken, formToken string) bool {
-	want := s.AnonCSRFToken(powToken)
-	return hmac.Equal([]byte(want), []byte(strings.TrimSpace(formToken)))
+// VerifyAnonCSRF constant-time-compares cookie vs form value.
+func (s *SessionStore) VerifyAnonCSRF(cookieValue, formValue string) bool {
+	if cookieValue == "" || formValue == "" {
+		return false
+	}
+	return hmac.Equal([]byte(strings.TrimSpace(cookieValue)), []byte(strings.TrimSpace(formValue)))
+}
+
+func setAnonCSRFCookie(w http.ResponseWriter, r *http.Request, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     AnonCSRFCookie,
+		Value:    value,
+		Path:     "/submit",
+		HttpOnly: true,
+		Secure:   secureContext(r),
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   600, // 10 min; form must be filled within this window
+	})
+}
+
+func readAnonCSRFCookie(r *http.Request) string {
+	c, err := r.Cookie(AnonCSRFCookie)
+	if err != nil {
+		return ""
+	}
+	return c.Value
 }
 
 // secureContext: HTTPS, .onion, or localhost-with-allowance.

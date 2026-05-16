@@ -178,6 +178,8 @@ func DefaultConfig() *Config {
 		AllowedMIME: []string{
 			"image/jpeg", "image/png", "image/webp", "image/gif",
 			"text/plain",
+			// HEIC removed: no pure-Go decoder available, so re-encoding to strip
+			// metadata is not possible. iPhone users: convert to JPEG first.
 		},
 		StripMetadata: true,
 	}

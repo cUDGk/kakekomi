@@ -32,6 +32,10 @@ type Secrets struct {
 
 	CSRFKey       []byte `json:"csrf_key"`
 	SessionMACKey []byte `json:"session_mac_key"`
+
+	// LookupKey is the HMAC key used to compute the indexed code lookup hash.
+	// Stays in memory only after secrets.age decrypt; never written separately.
+	LookupKey []byte `json:"lookup_key"`
 }
 
 func secretsPath(dataDir string) string {
@@ -56,6 +60,9 @@ func NewSecrets() (*Secrets, error) {
 		return nil, err
 	}
 	if s.SessionMACKey, err = randomBytes(32); err != nil {
+		return nil, err
+	}
+	if s.LookupKey, err = randomBytes(32); err != nil {
 		return nil, err
 	}
 	return s, nil
