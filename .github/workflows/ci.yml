@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # 2026-06-02 以降 Node.js 24 が GHA のデフォルトに。早めに移行.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   build-test:
     name: build + test + vet + vulncheck

@@ -10,6 +10,9 @@ permissions:
   id-token: write     # SLSA + cosign keyless signing
   attestations: write # build provenance attestations
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   build:
     name: reproducible build
