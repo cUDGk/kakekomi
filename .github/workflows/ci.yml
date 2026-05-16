@@ -22,8 +22,13 @@ jobs:
 
       - name: gofmt
         run: |
-          out=$(gofmt -l -s .)
-          if [ -n "$out" ]; then echo "$out"; exit 1; fi
+          # vendor/ は upstream の依存なので scope 外
+          out=$(gofmt -l -s $(go list -f '{{.Dir}}' ./...))
+          if [ -n "$out" ]; then
+            echo "Files needing gofmt -s:"
+            echo "$out"
+            exit 1
+          fi
 
       - name: go vet
         run: go vet ./...
