@@ -1,15 +1,15 @@
 module github.com/cUDGk/kakekomi
 
-go 1.25.0
+go 1.26.0
 
 require (
 	filippo.io/age v1.3.1
 	github.com/awnumar/memguard v0.23.0
 	github.com/pquerna/otp v1.5.0
 	github.com/tyler-smith/go-bip39 v1.1.0
-	golang.org/x/crypto v0.52.0
-	golang.org/x/image v0.41.0
-	golang.org/x/sys v0.45.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/image v0.46.0
+	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.30.0
 )
